@@ -15,13 +15,28 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.config import Config
 from core.database_handler import DatabaseHandler
 from core.data_feed_service import DataFeedService
+from core.logger_setup import setup_logger, get_logger
 from brokers.kite_broker import KiteBroker
+
+# Initialize logger with daily rotation
+logger = setup_logger()
 
 
 def log_message(message: str, level: str = "INFO"):
-    """Logging function."""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] [{level}] {message}")
+    """Logging function - writes to both console and file."""
+    level_upper = level.upper()
+    if level_upper == "INFO":
+        logger.info(message)
+    elif level_upper == "SUCCESS":
+        logger.info(message)  # SUCCESS uses INFO level
+    elif level_upper == "WARNING":
+        logger.warning(message)
+    elif level_upper == "ERROR":
+        logger.error(message)
+    elif level_upper == "DEBUG":
+        logger.debug(message)
+    else:
+        logger.info(message)
 
 
 def setup_mqtt_publisher(config):

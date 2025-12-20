@@ -186,7 +186,18 @@ class DataFeedService:
                 time_since_tick = ""
                 if self.last_tick_time:
                     elapsed = (datetime.now() - self.last_tick_time).total_seconds()
-                    time_since_tick = f", last tick {elapsed:.1f}s ago"
+                    
+                    # Format elapsed time in a human-readable way
+                    if elapsed < 60:
+                        time_since_tick = f", last tick {elapsed:.1f}s ago"
+                    elif elapsed < 3600:  # Less than 1 hour
+                        minutes = int(elapsed // 60)
+                        seconds = int(elapsed % 60)
+                        time_since_tick = f", last tick {minutes}m {seconds}s ago"
+                    else:  # 1 hour or more
+                        hours = int(elapsed // 3600)
+                        minutes = int((elapsed % 3600) // 60)
+                        time_since_tick = f", last tick {hours}h {minutes}m ago"
                 
                 self.logger(
                     f"[HEARTBEAT] Ticks: {stats['tick_count']}, "
