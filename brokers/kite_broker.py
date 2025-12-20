@@ -4,14 +4,12 @@ Kite broker implementation for data feed service.
 import os
 import sys
 import time
+import threading
 from typing import List, Dict, Any, Callable, Optional
 from datetime import datetime
 from pathlib import Path
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
-from broker_data_feed.core.base_broker import BaseBroker, TickData
+from core.base_broker import BaseBroker, TickData
 
 # Import KiteConnect
 try:
@@ -52,32 +50,41 @@ class KiteBroker(BaseBroker):
         self._token_to_symbol: Dict[int, str] = {}
     
     def connect(self) -> bool:
-        """Establish connection to Kite WebSocket."""
+        """Establish connection to Kite WebSocket.
+        
+        Returns:
+            True if connection successful, False otherwise.
+            Specific error message is logged via the logger.
+        """
         try:
             self.logger("Initializing Kite WebSocket connection...", "INFO")
             
             # Initialize KiteConnect API
+            self.logger(f"api_key: {self.api_key}", "INFO")
             self.kite = KiteConnect(api_key=self.api_key)
+
+            self.logger(f"access_token: {self.access_token}", "INFO")
             self.kite.set_access_token(self.access_token)
             
             # Test authentication
             try:
-                profile = self.kite.profile()
-                self.logger(f"Authenticated as: {profile.get('user_name', 'Unknown')}", "SUCCESS")
+                profile = self.kite.profile()  # type: ignore
+                self.logger(f"Authenticated as: {profile.get('user_name', 'Unknown')}", "SUCCESS")  # type: ignore
             except Exception as e:
-                self.logger(f"Authentication failed: {e}", "ERROR")
+                error_message = f"Authentication failed: {e}"
+                self.logger(error_message, "ERROR")
                 return False
             
             # Initialize KiteTicker
             self.kws = KiteTicker(self.api_key, self.access_token)
             
             # Set callbacks
-            self.kws.on_connect = self._on_connect
-            self.kws.on_close = self._on_close
-            self.kws.on_error = self._on_error
-            self.kws.on_ticks = self._on_ticks
-            self.kws.on_reconnect = self._on_reconnect
-            self.kws.on_noreconnect = self._on_noreconnect
+            self.kws.on_connect = self._on_connect  # type: ignore
+            self.kws.on_close = self._on_close  # type: ignore
+            self.kws.on_error = self._on_error  # type: ignore
+            self.kws.on_ticks = self._on_ticks  # type: ignore
+            self.kws.on_reconnect = self._on_reconnect  # type: ignore
+            self.kws.on_noreconnect = self._on_noreconnect  # type: ignore
             
             # Connect (this is blocking, so we'll run it in background)
             import threading
@@ -99,11 +106,13 @@ class KiteBroker(BaseBroker):
                 self.logger("Kite WebSocket connected successfully", "SUCCESS")
                 return True
             else:
-                self.logger(f"Connection timeout after {timeout}s", "ERROR")
+                error_message = f"Connection timeout after {timeout}s"
+                self.logger(error_message, "ERROR")
                 return False
                 
         except Exception as e:
-            self.logger(f"Failed to connect to Kite: {e}", "ERROR")
+            error_message = f"Failed to connect to Kite: {e}"
+            self.logger(error_message, "ERROR")
             return False
     
     def _connect_websocket(self):
@@ -127,12 +136,12 @@ class KiteBroker(BaseBroker):
                     raise
         
         signal_module.signal = patched_signal
+        stderr_capture = StringIO()
         
         try:
             # Suppress any remaining stderr output
-            stderr_capture = StringIO()
             with redirect_stderr(stderr_capture):
-                self.kws.connect(threaded=False)
+                self.kws.connect(threaded=False)  # type: ignore
         except ValueError as e:
             if "signal only works in main thread" in str(e):
                 # This is a known issue with Twisted in background threads
@@ -173,10 +182,10 @@ class KiteBroker(BaseBroker):
                 return False
             
             # Subscribe to instruments
-            self.kws.subscribe(instruments)
+            self.kws.subscribe(instruments)  # type: ignore
             
             # Set mode to full (includes OHLC, volume, etc.)
-            self.kws.set_mode(self.kws.MODE_FULL, instruments)
+            self.kws.set_mode(self.kws.MODE_FULL, instruments)  # type: ignore
             
             self._instruments.extend(instruments)
             self.logger(f"Subscribed to {len(instruments)} instruments", "SUCCESS")
@@ -193,7 +202,7 @@ class KiteBroker(BaseBroker):
                 self.logger("Cannot unsubscribe: Not connected", "ERROR")
                 return False
             
-            self.kws.unsubscribe(instruments)
+            self.kws.unsubscribe(instruments)  # type: ignore
             
             # Remove from internal list
             self._instruments = [i for i in self._instruments if i not in instruments]

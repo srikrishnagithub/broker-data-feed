@@ -8,9 +8,9 @@ import threading
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
-from broker_data_feed.core.base_broker import BaseBroker, TickData
-from broker_data_feed.core.candle_aggregator import CandleAggregator, Candle
-from broker_data_feed.core.database_handler import DatabaseHandler
+from core.base_broker import BaseBroker, TickData
+from core.candle_aggregator import CandleAggregator, Candle
+from core.database_handler import DatabaseHandler
 
 
 class DataFeedService:
@@ -43,7 +43,7 @@ class DataFeedService:
         
         # Initialize candle aggregator
         self.aggregator = CandleAggregator(candle_intervals, logger=self.logger)
-        self.aggregator.on_candle_complete = self._on_candle_complete
+        self.aggregator.on_candle_complete = self._on_candle_complete # pyright: ignore[reportAttributeAccessIssue]
         
         # Symbol to instrument token mapping
         self._symbol_to_token: Dict[str, int] = {}
@@ -248,13 +248,13 @@ class DataFeedService:
             
             # Connect to broker
             self.logger(f"Connecting to {self.broker.get_broker_name()}...", "INFO")
+            
             if not self.broker.connect():
-                raise RuntimeError("Failed to connect to broker")
+                raise RuntimeError("Broker connection failed")
             
             # Subscribe to instruments
             self.logger(f"Subscribing to {len(instruments)} instruments...", "INFO")
-            if not self.broker.subscribe(instruments):
-                raise RuntimeError("Failed to subscribe to instruments")
+            self.broker.subscribe(instruments)
             
             # Start heartbeat thread
             self._heartbeat_thread = threading.Thread(
@@ -264,28 +264,25 @@ class DataFeedService:
             )
             self._heartbeat_thread.start()
             
-            self.logger("Data feed service started successfully", "SUCCESS")
-            
             # Log market status
-            market_open = self._is_market_hours()
-            market_status = "Market is OPEN" if market_open else "Market is CLOSED"
-            interval = self._get_current_heartbeat_interval()
-            self.logger(f"{market_status} - Heartbeat interval: {interval}s", "INFO")
+            market_status = "market hours" if self._is_market_hours() else "off-market hours"
+            self.logger(f"Service started successfully during {market_status}", "SUCCESS")
             
-            self.logger("Press Ctrl+C to stop", "INFO")
-            
-            # Keep service running
+            # Wait for shutdown signal
             while not self.shutdown_event.is_set():
-                self.shutdown_event.wait(timeout=1)
+                time.sleep(1)
                 
-        except KeyboardInterrupt:
-            self.logger("Keyboard interrupt received", "INFO")
+        except RuntimeError as e:
+            self.logger(f"Service startup failed: {e}", "ERROR")
+            raise  # Re-raise to be caught by main
+            
         except Exception as e:
-            self.logger(f"Error in data feed service: {e}", "ERROR")
-            raise
+            self.logger(f"An unexpected error occurred: {e}", "ERROR")
+            raise RuntimeError(f"Unexpected error: {e}") from e
+        
         finally:
-            self.stop()
-    
+            self.logger("Service shutting down...", "INFO")
+
     def stop(self):
         """Stop the data feed service."""
         try:

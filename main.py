@@ -358,7 +358,9 @@ def main():
         log_message("Keyboard interrupt received", "INFO")
         return 0
     except RuntimeError as e:
-        if "Failed to connect to broker" in str(e):
+        # Check for specific broker connection error
+        error_str = str(e)
+        if "Broker connection failed" in error_str:
             log_message("BROKER CONNECTION FAILED", "ERROR")
             log_message("", "ERROR")
             log_message("This usually means invalid or expired Kite API credentials.", "ERROR")
@@ -418,7 +420,8 @@ def main():
             return 1
         else:
             # Re-raise other RuntimeErrors
-            raise
+            log_message(f"A runtime error occurred: {e}", "ERROR")
+            return 1
     except Exception as e:
         log_message(f"Fatal error: {e}", "ERROR")
         import traceback
