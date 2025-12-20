@@ -10,10 +10,11 @@ import threading
 class Candle:
     """Represents an OHLC candle."""
     
-    def __init__(self, symbol: str, interval: int, timestamp: datetime):
+    def __init__(self, symbol: str, interval: int, timestamp: datetime, instrument_token: int = None):
         self.symbol = symbol
         self.interval = interval  # in minutes
         self.timestamp = timestamp
+        self.instrument_token = instrument_token
         self.open: Optional[float] = None
         self.high: Optional[float] = None
         self.low: Optional[float] = None
@@ -48,14 +49,15 @@ class Candle:
     def to_dict(self) -> Dict:
         """Convert candle to dictionary."""
         return {
-            'symbol': self.symbol,
+            'instrument_token': self.instrument_token,
+            'tradingsymbol': self.symbol,
             'datetime': self.timestamp,
             'open': self.open,
             'high': self.high,
             'low': self.low,
             'close': self.close,
             'volume': self.volume,
-            'tick_count': self.tick_count
+            'created_at': datetime.now()
         }
 
 
@@ -86,6 +88,13 @@ class CandleAggregator:
         
         # Completed candles callback
         self.on_candle_complete = None
+        
+        # Symbol to instrument token mapping
+        self._symbol_to_token: Dict[str, int] = {}
+    
+    def set_instrument_tokens(self, symbol_to_token: Dict[str, int]):
+        """Set symbol to instrument token mapping."""
+        self._symbol_to_token = symbol_to_token
     
     def _default_logger(self, message: str, level: str = "INFO"):
         """Default logger."""
@@ -123,8 +132,9 @@ class CandleAggregator:
                 candle_ts = self._get_candle_timestamp(timestamp, interval)
                 
                 # Get or create active candle
+                instrument_token = self._symbol_to_token.get(symbol)
                 if symbol not in self.active_candles[interval]:
-                    self.active_candles[interval][symbol] = Candle(symbol, interval, candle_ts)
+                    self.active_candles[interval][symbol] = Candle(symbol, interval, candle_ts, instrument_token)
                 
                 active_candle = self.active_candles[interval][symbol]
                 
@@ -135,7 +145,7 @@ class CandleAggregator:
                         completed_candles.append(active_candle)
                     
                     # Start new candle
-                    self.active_candles[interval][symbol] = Candle(symbol, interval, candle_ts)
+                    self.active_candles[interval][symbol] = Candle(symbol, interval, candle_ts, instrument_token)
                     active_candle = self.active_candles[interval][symbol]
                 
                 # Update candle with tick data

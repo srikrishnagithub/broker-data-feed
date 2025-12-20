@@ -82,8 +82,7 @@ class KiteBroker(BaseBroker):
             # Connect (this is blocking, so we'll run it in background)
             import threading
             connect_thread = threading.Thread(
-                target=self.kws.connect,
-                kwargs={'threaded': False},
+                target=self._connect_websocket,
                 daemon=True,
                 name="kite_websocket"
             )
@@ -106,6 +105,49 @@ class KiteBroker(BaseBroker):
         except Exception as e:
             self.logger(f"Failed to connect to Kite: {e}", "ERROR")
             return False
+    
+    def _connect_websocket(self):
+        """Connect to WebSocket in background thread."""
+        import sys
+        import os
+        import signal as signal_module
+        from contextlib import redirect_stderr
+        from io import StringIO
+        
+        # Monkey patch signal.signal to suppress the specific error
+        original_signal = signal_module.signal
+        def patched_signal(signum, handler):
+            try:
+                return original_signal(signum, handler)
+            except ValueError as e:
+                if "signal only works in main thread" in str(e):
+                    # Suppress this specific error - it's non-fatal
+                    return None
+                else:
+                    raise
+        
+        signal_module.signal = patched_signal
+        
+        try:
+            # Suppress any remaining stderr output
+            stderr_capture = StringIO()
+            with redirect_stderr(stderr_capture):
+                self.kws.connect(threaded=False)
+        except ValueError as e:
+            if "signal only works in main thread" in str(e):
+                # This is a known issue with Twisted in background threads
+                # The connection still works despite this error
+                self.logger("WebSocket signal handler warning (non-fatal)", "WARNING")
+            else:
+                raise
+        finally:
+            # Restore original signal function
+            signal_module.signal = original_signal
+            
+            # Check if we captured any error in stderr
+            captured_output = stderr_capture.getvalue()
+            if captured_output and "signal only works in main thread" in captured_output:
+                self.logger("WebSocket signal handler warning suppressed (non-fatal)", "WARNING")
     
     def disconnect(self):
         """Disconnect from Kite WebSocket."""
@@ -249,11 +291,29 @@ class KiteBroker(BaseBroker):
             if not self._tick_callback:
                 return
             
+            # Check if this is a heartbeat (single byte or empty data)
+            if not ticks or (isinstance(ticks, bytes) and len(ticks) == 1):
+                # This is a heartbeat, ignore it
+                self.logger("Received heartbeat from Kite (ignored)", "INFO")
+                return
+            
+            # Ensure ticks is a list
+            if not isinstance(ticks, list):
+                self.logger(f"Unexpected tick data type: {type(ticks)}", "WARNING")
+                return
+            
             # Convert Kite ticks to standardized TickData
             tick_data_list = []
             
             for tick in ticks:
+                # Skip if tick is not a valid dictionary
+                if not isinstance(tick, dict):
+                    continue
+                    
                 instrument_token = tick.get('instrument_token')
+                if instrument_token is None:
+                    continue
+                    
                 symbol = self._token_to_symbol.get(instrument_token, f"TOKEN_{instrument_token}")
                 
                 tick_data = TickData(
@@ -268,8 +328,9 @@ class KiteBroker(BaseBroker):
                 
                 tick_data_list.append(tick_data)
             
-            # Call the tick callback
-            self._tick_callback(tick_data_list)
+            # Only call callback if we have valid tick data
+            if tick_data_list:
+                self._tick_callback(tick_data_list)
             
         except Exception as e:
             self.logger(f"Error processing ticks: {e}", "ERROR")

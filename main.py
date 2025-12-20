@@ -12,10 +12,10 @@ from datetime import datetime
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from broker_data_feed.config.config import Config
-from broker_data_feed.core.database_handler import DatabaseHandler
-from broker_data_feed.core.data_feed_service import DataFeedService
-from broker_data_feed.brokers.kite_broker import KiteBroker
+from config.config import Config
+from core.database_handler import DatabaseHandler
+from core.data_feed_service import DataFeedService
+from brokers.kite_broker import KiteBroker
 
 
 def log_message(message: str, level: str = "INFO"):
@@ -41,9 +41,8 @@ def setup_mqtt_publisher(config):
         return None
     
     try:
-        # Import MQTT publisher from Trading-V2
-        sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
-        from trading.services.mqtt_publisher import HiveMQCloudPublisher
+        # Import MQTT publisher from brokers.mqtt_publisher
+        from brokers.mqtt_publisher import HiveMQCloudPublisher
         
         log_message("Initializing MQTT publisher...", "INFO")
         publisher = HiveMQCloudPublisher(
@@ -83,36 +82,94 @@ def load_instruments_from_file(file_path: str) -> list:
         return []
 
 
-def load_instruments_from_database(db_handler: DatabaseHandler) -> list:
+def check_required_tables(db_handler: DatabaseHandler) -> bool:
     """
-    Load instruments from database.
+    Check if all required tables exist and have data.
     
     Args:
         db_handler: Database handler instance
         
     Returns:
-        List of symbols
+        True if all checks pass, False otherwise
+    """
+    required_tables = ['fundamental', 'instruments']
+    optional_tables = ['merged_candles_5min']
+    
+    # Check required tables
+    for table in required_tables:
+        if not db_handler.check_table_exists(table):
+            log_message(f"Required table '{table}' does not exist", "ERROR")
+            return False
+        else:
+            log_message(f"Table '{table}' exists", "SUCCESS")
+    
+    # Check optional tables (warning only)
+    for table in optional_tables:
+        if not db_handler.check_table_exists(table):
+            log_message(f"Optional table '{table}' does not exist (will be created/populated by service)", "WARNING")
+        else:
+            log_message(f"Table '{table}' exists", "SUCCESS")
+    
+    # Check if fundamental table has data
+    try:
+        from sqlalchemy import text
+        with db_handler.engine.connect() as conn:
+            result = conn.execute(text('SELECT COUNT(*) FROM fundamental WHERE "SYMBOL" IS NOT NULL'))
+            count = result.fetchone()[0] # type: ignore
+            if count == 0:
+                log_message("Fundamental table exists but contains no symbols", "ERROR")
+                return False
+            else:
+                log_message(f"Fundamental table contains {count} symbols", "SUCCESS")
+            
+            # Check if instruments table has data
+            result = conn.execute(text('SELECT COUNT(*) FROM instruments'))
+            count = result.fetchone()[0] # type: ignore
+            if count == 0:
+                log_message("Instruments table exists but contains no data", "ERROR")
+                return False
+            else:
+                log_message(f"Instruments table contains {count} instruments", "SUCCESS")
+                
+    except Exception as e:
+        log_message(f"Error checking table data: {e}", "ERROR")
+        return False
+    
+    return True
+
+
+def load_instruments_from_database(db_handler: DatabaseHandler) -> dict:
+    """
+    Load instruments from database - symbols from Fundamental table with tokens from instruments table.
+    
+    Args:
+        db_handler: Database handler instance
+        
+    Returns:
+        Dictionary mapping symbols to instrument tokens
     """
     try:
         from sqlalchemy import text
         
         query = text("""
-            SELECT DISTINCT tradingsymbol 
-            FROM merged_candles_5min 
-            WHERE datetime >= CURRENT_DATE - INTERVAL '30 days'
-            ORDER BY tradingsymbol
+            SELECT DISTINCT 
+                f."SYMBOL" as tradingsymbol,
+                i.instrument_token
+            FROM fundamental f
+            JOIN instruments i ON f."SYMBOL" = i.tradingsymbol
+            ORDER BY f."SYMBOL"
         """)
         
         with db_handler.engine.connect() as conn:
             result = conn.execute(query)
-            symbols = [row[0] for row in result]
+            symbol_to_token = {row[0]: row[1] for row in result}
         
-        log_message(f"Loaded {len(symbols)} symbols from database", "INFO")
-        return symbols
+        log_message(f"Loaded {len(symbol_to_token)} symbols with instrument tokens from database", "INFO")
+        return symbol_to_token
         
     except Exception as e:
         log_message(f"Error loading instruments from database: {e}", "ERROR")
-        return []
+        return {}
 
 
 def parse_arguments():
@@ -195,17 +252,23 @@ def main():
             logger=log_message
         )
         
+        # Check required tables
+        log_message("Checking required database tables...", "INFO")
+        if not check_required_tables(db_handler):
+            log_message("Required database tables check failed", "ERROR")
+            return 1
+        
         # Test database if requested
         if args.test_database:
             log_message("Testing database connection...", "INFO")
             if db_handler.test_connection():
                 log_message("Database connection test successful", "SUCCESS")
                 
-                # Check table existence
-                if db_handler.check_table_exists('merged_candles_5min'):
-                    log_message("Table 'merged_candles_5min' exists", "SUCCESS")
+                # Check required tables
+                if check_required_tables(db_handler):
+                    log_message("All required tables are present and populated", "SUCCESS")
                 else:
-                    log_message("Table 'merged_candles_5min' not found", "WARNING")
+                    log_message("Required tables check failed", "ERROR")
                 
                 return 0
             else:
@@ -228,33 +291,38 @@ def main():
                 log_message(f"Broker test failed: {result['message']}", "ERROR")
                 return 1
         
-        # Load symbols
-        symbols = []
+        # Load symbols and instrument tokens
+        symbol_to_token = {}
         if args.symbols:
             symbols = args.symbols
             log_message(f"Using command-line symbols: {len(symbols)} symbols", "INFO")
+            # Load instrument tokens from broker
+            log_message("Loading instrument tokens from broker...", "INFO")
+            symbol_to_token = broker.load_instruments(symbols)
         elif args.symbols_file:
             symbols = load_instruments_from_file(args.symbols_file)
+            if symbols:
+                log_message("Loading instrument tokens from broker...", "INFO")
+                symbol_to_token = broker.load_instruments(symbols)
         elif args.symbols_from_db:
-            symbols = load_instruments_from_database(db_handler)
+            log_message("Loading symbols and instrument tokens from database...", "INFO")
+            symbol_to_token = load_instruments_from_database(db_handler)
+            symbols = list(symbol_to_token.keys())
+            
+            # Populate broker's internal mapping
+            if symbol_to_token:
+                broker._token_to_symbol = {token: symbol for symbol, token in symbol_to_token.items()}
+                log_message("Populated broker's token-to-symbol mapping", "INFO")
         else:
             log_message("No symbols specified. Use --symbols, --symbols-file, or --symbols-from-db", "ERROR")
             return 1
         
-        if not symbols:
-            log_message("No symbols to subscribe", "ERROR")
-            return 1
-        
-        # Load instrument tokens
-        log_message("Loading instrument tokens...", "INFO")
-        symbol_to_token = broker.load_instruments(symbols)
-        
         if not symbol_to_token:
-            log_message("Failed to load instrument tokens", "ERROR")
+            log_message("No instrument tokens loaded", "ERROR")
             return 1
         
         instruments = list(symbol_to_token.values())
-        log_message(f"Loaded {len(instruments)} instrument tokens", "SUCCESS")
+        log_message(f"Loaded {len(instruments)} instrument tokens for {len(symbols)} symbols", "SUCCESS")
         
         # Setup MQTT (optional)
         mqtt_publisher = setup_mqtt_publisher(config)
@@ -289,6 +357,68 @@ def main():
     except KeyboardInterrupt:
         log_message("Keyboard interrupt received", "INFO")
         return 0
+    except RuntimeError as e:
+        if "Failed to connect to broker" in str(e):
+            log_message("BROKER CONNECTION FAILED", "ERROR")
+            log_message("", "ERROR")
+            log_message("This usually means invalid or expired Kite API credentials.", "ERROR")
+            log_message("Please check your .env file and ensure:", "ERROR")
+            log_message("  - KITE_API_KEY is correct", "ERROR")
+            log_message("  - KITE_ACCESS_TOKEN is valid (not expired)", "ERROR")
+            log_message("  - You have a valid Kite subscription", "ERROR")
+            log_message("", "ERROR")
+            
+            # Check what credentials are actually being used
+            api_key = os.getenv('KITE_API_KEY', 'NOT_SET')
+            access_token = os.getenv('KITE_ACCESS_TOKEN', 'NOT_SET')
+            
+            if len(api_key) > 10:
+                masked_api = api_key[:6] + "..." + api_key[-4:]
+                log_message(f"API Key being used: {masked_api}", "ERROR")
+            else:
+                log_message("API Key: NOT_SET", "ERROR")
+                
+            if len(access_token) > 10:
+                masked_token = access_token[:6] + "..." + access_token[-4:]
+                log_message(f"Access Token being used: {masked_token}", "ERROR")
+            else:
+                log_message("Access Token: NOT_SET", "ERROR")
+            
+            log_message("", "ERROR")
+            log_message("IMPORTANT: Make sure the API key and access token are from the SAME Kite app!", "ERROR")
+            log_message("If you just updated the .env file:", "ERROR")
+            log_message("  - Try restarting your terminal/command prompt", "ERROR")
+            log_message("  - Or run: python main.py --test-broker", "ERROR")
+            log_message("", "ERROR")
+            log_message("To get new credentials:", "ERROR")
+            log_message("  1. Visit: https://developers.kite.trade/", "ERROR")
+            log_message("  2. Login with your Kite credentials", "ERROR")
+            log_message("  3. Generate a new access token", "ERROR")
+            log_message("  4. Update your .env file", "ERROR")
+            
+            # Generate and display login URL following kite_token_manager.py pattern
+            try:
+                from kiteconnect import KiteConnect
+                api_key = config.get_broker_config('kite').get('api_key') # type: ignore
+                if api_key:
+                    kite_temp = KiteConnect(api_key=api_key)
+                    login_url = kite_temp.login_url()
+                    log_message("", "ERROR")
+                    log_message("Direct login URL:", "ERROR")
+                    log_message(f"   {login_url}", "ERROR")
+                    log_message("", "ERROR")
+                    log_message("Copy this URL and paste it in your browser to get a new access token.", "ERROR")
+                else:
+                    log_message("Could not generate login URL - KITE_API_KEY not found", "ERROR")
+            except Exception as url_error:
+                log_message(f"Could not generate login URL: {url_error}", "ERROR")
+            
+            log_message("", "ERROR")
+            log_message("To test credentials: python main.py --test-broker", "ERROR")
+            return 1
+        else:
+            # Re-raise other RuntimeErrors
+            raise
     except Exception as e:
         log_message(f"Fatal error: {e}", "ERROR")
         import traceback

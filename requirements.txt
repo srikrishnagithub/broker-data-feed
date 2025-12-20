@@ -1,0 +1,9 @@
+# Core dependencies for broker data feed service
+kiteconnect>=4.1.0
+sqlalchemy>=2.0.0
+pandas>=2.0.0
+python-dotenv>=1.0.0
+psycopg2-binary>=2.9.0
+
+# Optional MQTT support
+paho-mqtt>=1.6.0

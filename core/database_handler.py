@@ -80,7 +80,7 @@ class DatabaseHandler:
             self.logger(f"Error checking table existence: {e}", "ERROR")
             return False
     
-    def save_candles(self, candles: List, table_name: str = 'merged_candles_5min') -> int:
+    def save_candles(self, candles: List, table_name: str = 'live_candles_5min') -> int:
         """
         Save candles to database.
         
@@ -99,11 +99,9 @@ class DatabaseHandler:
             candle_dicts = [c.to_dict() for c in candles]
             df = pd.DataFrame(candle_dicts)
             
-            # Rename columns to match database schema
-            df = df.rename(columns={
-                'symbol': 'tradingsymbol',
-                'datetime': 'datetime'
-            })
+            # Remove tick_count column if it exists (not in current table schema)
+            if 'tick_count' in df.columns:
+                df = df.drop(columns=['tick_count'])
             
             # Ensure datetime is datetime type
             if 'datetime' in df.columns:

@@ -45,6 +45,9 @@ class DataFeedService:
         self.aggregator = CandleAggregator(candle_intervals, logger=self.logger)
         self.aggregator.on_candle_complete = self._on_candle_complete
         
+        # Symbol to instrument token mapping
+        self._symbol_to_token: Dict[str, int] = {}
+        
         # Statistics
         self.tick_count = 0
         self.candle_count = 0
@@ -56,9 +59,40 @@ class DataFeedService:
         
         # Heartbeat thread
         self._heartbeat_thread: Optional[threading.Thread] = None
-        self._heartbeat_interval = 30  # seconds
+        self._heartbeat_interval = 30  # seconds (market hours)
+        self._off_market_heartbeat_interval = 300  # 5 minutes (off-market hours)
         
         self.logger("Data feed service initialized", "SUCCESS")
+    
+    def _is_market_hours(self) -> bool:
+        """
+        Check if current time is within market hours.
+        
+        NSE market hours: Monday-Friday, 9:15 AM - 3:30 PM IST
+        
+        Returns:
+            True if market is open, False otherwise
+        """
+        now = datetime.now()
+        
+        # Check if it's a weekday (Monday = 0, Sunday = 6)
+        if now.weekday() >= 5:  # Saturday or Sunday
+            return False
+        
+        # Check time: 9:15 AM to 3:30 PM IST
+        market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
+        market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+        
+        return market_open <= now <= market_close
+    
+    def _get_current_heartbeat_interval(self) -> int:
+        """
+        Get the appropriate heartbeat interval based on market hours.
+        
+        Returns:
+            Heartbeat interval in seconds
+        """
+        return self._heartbeat_interval if self._is_market_hours() else self._off_market_heartbeat_interval
     
     def _default_logger(self, message: str, level: str = "INFO"):
         """Default logger."""
@@ -121,20 +155,28 @@ class DataFeedService:
     
     def _heartbeat_loop(self):
         """Background heartbeat loop."""
-        self.logger(f"Heartbeat started (interval: {self._heartbeat_interval}s)", "INFO")
+        self.logger(f"Heartbeat started (market hours: {self._heartbeat_interval}s, off-market: {self._off_market_heartbeat_interval}s)", "INFO")
         
         while not self.shutdown_event.is_set():
             try:
+                # Get current heartbeat interval based on market hours
+                current_interval = self._get_current_heartbeat_interval()
+                
                 # Wait for heartbeat interval or shutdown
-                if self.shutdown_event.wait(timeout=self._heartbeat_interval):
+                if self.shutdown_event.wait(timeout=current_interval):
                     break
+                
+                # Get market status for logging
+                market_open = self._is_market_hours()
+                market_status = "market hours" if market_open else "off-market hours"
                 
                 # Get statistics
                 with self._stats_lock:
                     stats = {
                         'tick_count': self.tick_count,
                         'candle_count': self.candle_count,
-                        'last_tick_time': self.last_tick_time.isoformat() if self.last_tick_time else None
+                        'last_tick_time': self.last_tick_time.isoformat() if self.last_tick_time else None,
+                        'market_hours': market_open
                     }
                 
                 # Add aggregator statistics
@@ -149,20 +191,26 @@ class DataFeedService:
                 self.logger(
                     f"[HEARTBEAT] Ticks: {stats['tick_count']}, "
                     f"Candles: {stats['candle_count']}"
-                    f"{time_since_tick}",
+                    f"{time_since_tick} ({market_status})",
                     "INFO"
                 )
                 
-                # Publish to MQTT if available
+                # Publish to MQTT if available (more frequent during market hours)
                 if self.mqtt_publisher and self.mqtt_publisher.is_connected():
-                    heartbeat_data = {
-                        'timestamp': datetime.now().isoformat(),
-                        'service': 'broker_data_feed',
-                        'status': 'active',
-                        'broker': self.broker.get_broker_name(),
-                        'statistics': stats
-                    }
-                    self.mqtt_publisher.publish('heartbeat/data_feed', heartbeat_data, qos=1)
+                    # During market hours, publish every heartbeat
+                    # During off-market hours, only publish every 10 minutes (every 2 heartbeats)
+                    should_publish = market_open or (current_interval >= 300 and (int(datetime.now().timestamp()) // 600) % 2 == 0)
+                    
+                    if should_publish:
+                        heartbeat_data = {
+                            'timestamp': datetime.now().isoformat(),
+                            'service': 'broker_data_feed',
+                            'status': 'active',
+                            'broker': self.broker.get_broker_name(),
+                            'market_hours': market_open,
+                            'statistics': stats
+                        }
+                        self.mqtt_publisher.publish('heartbeat/data_feed', heartbeat_data, qos=1)
                     
             except Exception as e:
                 self.logger(f"Error in heartbeat loop: {e}", "ERROR")
@@ -185,9 +233,15 @@ class DataFeedService:
             if not self.database.test_connection():
                 raise RuntimeError("Database connection test failed")
             
+            # Create symbol to instrument token mapping
+            self._symbol_to_token = dict(zip(symbols, instruments))
+            
+            # Initialize candle aggregator with instrument tokens
+            self.aggregator.set_instrument_tokens(self._symbol_to_token)
+            
             # Check if target table exists
-            if not self.database.check_table_exists('merged_candles_5min'):
-                self.logger("Warning: merged_candles_5min table does not exist", "WARNING")
+            if not self.database.check_table_exists('live_candles_5min'):
+                self.logger("Warning: live_candles_5min table does not exist", "WARNING")
             
             # Set tick callback
             self.broker.set_tick_callback(self._on_tick_received)
@@ -211,6 +265,13 @@ class DataFeedService:
             self._heartbeat_thread.start()
             
             self.logger("Data feed service started successfully", "SUCCESS")
+            
+            # Log market status
+            market_open = self._is_market_hours()
+            market_status = "Market is OPEN" if market_open else "Market is CLOSED"
+            interval = self._get_current_heartbeat_interval()
+            self.logger(f"{market_status} - Heartbeat interval: {interval}s", "INFO")
+            
             self.logger("Press Ctrl+C to stop", "INFO")
             
             # Keep service running
