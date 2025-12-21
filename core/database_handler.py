@@ -95,8 +95,23 @@ class DatabaseHandler:
             return 0
         
         try:
-            # Convert candles to dataframe
-            candle_dicts = [c.to_dict() for c in candles]
+            # Filter out zero-volume candles
+            valid_candles = []
+            for candle in candles:
+                if candle.volume == 0:
+                    self.logger(
+                        f"Skipping zero-volume candle in database save: {candle.symbol} at {candle.timestamp.strftime('%Y-%m-%d %H:%M:%S')}",
+                        "WARNING"
+                    )
+                else:
+                    valid_candles.append(candle)
+            
+            if not valid_candles:
+                self.logger("No valid candles to save (all had zero volume)", "WARNING")
+                return 0
+            
+            # Convert valid candles to dataframe
+            candle_dicts = [c.to_dict() for c in valid_candles]
             df = pd.DataFrame(candle_dicts)
             
             # Remove tick_count column if it exists (not in current table schema)
@@ -117,8 +132,8 @@ class DatabaseHandler:
                     method='multi'
                 )
             
-            self.logger(f"Saved {len(candles)} candles to {table_name}", "SUCCESS")
-            return len(candles)
+            self.logger(f"Saved {len(valid_candles)} candles to {table_name}", "SUCCESS")
+            return len(valid_candles)
             
         except Exception as e:
             self.logger(f"Error saving candles to database: {e}", "ERROR")

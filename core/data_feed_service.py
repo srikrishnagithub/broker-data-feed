@@ -113,6 +113,15 @@ class DataFeedService:
             
             # Process each tick
             for tick in ticks:
+                # Skip ticks with zero volume and generate warning
+                if tick.volume == 0:
+                    self.logger(
+                        f"Skipping zero-volume tick for {tick.symbol} at {tick.timestamp.strftime('%Y-%m-%d %H:%M:%S')} "
+                        f"(price: {tick.last_price:.2f}, market_hours: {self._is_market_hours()})",
+                        "WARNING"
+                    )
+                    continue
+                
                 self.aggregator.process_tick(
                     symbol=tick.symbol,
                     price=tick.last_price,
@@ -135,20 +144,33 @@ class DataFeedService:
             candles: List of completed candles
         """
         try:
-            # Save to database
-            saved_count = self.database.save_candles(candles)
-            
-            with self._stats_lock:
-                self.candle_count += saved_count
-            
-            # Log candle completion
+            # Filter out zero-volume candles
+            valid_candles = []
             for candle in candles:
-                self.logger(
-                    f"Candle {candle.interval}min {candle.symbol}: "
-                    f"O={candle.open:.2f} H={candle.high:.2f} L={candle.low:.2f} C={candle.close:.2f} "
-                    f"V={candle.volume} ({candle.tick_count} ticks)",
-                    "INFO"
-                )
+                if candle.volume == 0:
+                    self.logger(
+                        f"Skipping zero-volume candle {candle.interval}min {candle.symbol} at {candle.timestamp.strftime('%Y-%m-%d %H:%M:%S')} "
+                        f"(O={candle.open:.2f} H={candle.high:.2f} L={candle.low:.2f} C={candle.close:.2f}, market_hours: {self._is_market_hours()})",
+                        "WARNING"
+                    )
+                else:
+                    valid_candles.append(candle)
+            
+            # Only save valid candles
+            if valid_candles:
+                saved_count = self.database.save_candles(valid_candles)
+                
+                with self._stats_lock:
+                    self.candle_count += saved_count
+                
+                # Log candle completion
+                for candle in valid_candles:
+                    self.logger(
+                        f"Candle {candle.interval}min {candle.symbol}: "
+                        f"O={candle.open:.2f} H={candle.high:.2f} L={candle.low:.2f} C={candle.close:.2f} "
+                        f"V={candle.volume} ({candle.tick_count} ticks)",
+                        "INFO"
+                    )
                 
         except Exception as e:
             self.logger(f"Error saving candles: {e}", "ERROR")
