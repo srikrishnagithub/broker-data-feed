@@ -60,7 +60,7 @@ class DataFeedService:
         # Heartbeat thread
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._heartbeat_interval = 30  # seconds (market hours)
-        self._off_market_heartbeat_interval = 300  # 5 minutes (off-market hours)
+        self._off_market_heartbeat_interval = 600  # 10 minutes (off-market hours)
         
         self.logger("Data feed service initialized", "SUCCESS")
     
