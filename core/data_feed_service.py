@@ -113,15 +113,6 @@ class DataFeedService:
             
             # Process each tick
             for tick in ticks:
-                # Skip ticks with zero volume and generate warning only during market hours
-                if tick.volume == 0:
-                    if self._is_market_hours():
-                        self.logger(
-                            f"Skipping zero-volume tick for {tick.symbol} at {tick.timestamp.strftime('%Y-%m-%d %H:%M:%S')} "
-                            f"(price: {tick.last_price:.2f}, market_hours: {self._is_market_hours()})",
-                            "WARNING"
-                        )
-                    continue
                 
                 self.aggregator.process_tick(
                     symbol=tick.symbol,
@@ -145,24 +136,25 @@ class DataFeedService:
             candles: List of completed candles
         """
         try:
-            # Filter out zero-volume candles
-            valid_candles = []
-            for candle in candles:
-                if candle.volume == 0:
-                    self.logger(
-                        f"Skipping zero-volume candle {candle.interval}min {candle.symbol} at {candle.timestamp.strftime('%Y-%m-%d %H:%M:%S')} "
-                        f"(O={candle.open:.2f} H={candle.high:.2f} L={candle.low:.2f} C={candle.close:.2f}, market_hours: {self._is_market_hours()})",
-                        "WARNING"
-                    )
-                else:
-                    valid_candles.append(candle)
+            # Process candles without volume filtering
+            valid_candles = list(candles)
             
             # Only save valid candles
             if valid_candles:
-                saved_count = self.database.save_candles(valid_candles)
+                # Group candles by interval and save to respective tables
+                candles_by_interval = {}
+                for candle in valid_candles:
+                    interval = candle.interval
+                    if interval not in candles_by_interval:
+                        candles_by_interval[interval] = []
+                    candles_by_interval[interval].append(candle)
                 
-                with self._stats_lock:
-                    self.candle_count += saved_count
+                # Save candles to their respective tables
+                for interval, candles_list in candles_by_interval.items():
+                    table_name = f'live_candles_{interval}min'
+                    saved_count = self.database.save_candles(candles_list, table_name)
+                    with self._stats_lock:
+                        self.candle_count += saved_count
                 
                 # Log candle completion
                 for candle in valid_candles:
@@ -336,7 +328,18 @@ class DataFeedService:
             remaining_candles = self.aggregator.force_close_all()
             if remaining_candles:
                 self.logger(f"Saving {len(remaining_candles)} remaining candles...", "INFO")
-                self.database.save_candles(remaining_candles)
+            # Group remaining candles by interval
+            remaining_by_interval = {}
+            for candle in remaining_candles:
+                interval = candle.interval
+                if interval not in remaining_by_interval:
+                    remaining_by_interval[interval] = []
+                remaining_by_interval[interval].append(candle)
+            
+            # Save to respective tables
+            for interval, candles_list in remaining_by_interval.items():
+                table_name = f'live_candles_{interval}min'
+                self.database.save_candles(candles_list, table_name)
             
             # Close database connection
             self.database.close()

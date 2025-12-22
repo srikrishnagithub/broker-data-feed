@@ -95,16 +95,8 @@ class DatabaseHandler:
             return 0
         
         try:
-            # Filter out zero-volume candles
-            valid_candles = []
-            for candle in candles:
-                if candle.volume == 0:
-                    self.logger(
-                        f"Skipping zero-volume candle in database save: {candle.symbol} at {candle.timestamp.strftime('%Y-%m-%d %H:%M:%S')}",
-                        "WARNING"
-                    )
-                else:
-                    valid_candles.append(candle)
+            # Process all candles without volume filtering
+            valid_candles = list(candles)
             
             if not valid_candles:
                 self.logger("No valid candles to save (all had zero volume)", "WARNING")
