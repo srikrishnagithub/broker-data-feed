@@ -136,9 +136,10 @@ class DataFeedService:
             candles: List of completed candles
         """
         try:
+            self.logger(f"_on_candle_complete called with {len(candles)} candles", "DEBUG")
             # Process candles without volume filtering
             valid_candles = list(candles)
-            
+
             # Only save valid candles
             if valid_candles:
                 # Group candles by interval and save to respective tables
@@ -148,25 +149,22 @@ class DataFeedService:
                     if interval not in candles_by_interval:
                         candles_by_interval[interval] = []
                     candles_by_interval[interval].append(candle)
-                
+
                 # Save candles to their respective tables
                 for interval, candles_list in candles_by_interval.items():
                     table_name = f'live_candles_{interval}min'
+                    self.logger(f"Saving {len(candles_list)} candles to {table_name}", "DEBUG")
                     saved_count = self.database.save_candles(candles_list, table_name)
+                    self.logger(f"Saved {saved_count} candles to {table_name}", "DEBUG")
                     with self._stats_lock:
                         self.candle_count += saved_count
-                
-                # Log candle completion
-                for candle in valid_candles:
-                    self.logger(
-                        f"Candle {candle.interval}min {candle.symbol}: "
-                        f"O={candle.open:.2f} H={candle.high:.2f} L={candle.low:.2f} C={candle.close:.2f} "
-                        f"V={candle.volume} ({candle.tick_count} ticks)",
-                        "INFO"
-                    )
-                
+            else:
+                self.logger(f"No valid candles to save", "DEBUG")
+
         except Exception as e:
             self.logger(f"Error saving candles: {e}", "ERROR")
+            import traceback
+            self.logger(f"Traceback: {traceback.format_exc()}", "ERROR")
     
     def _heartbeat_loop(self):
         """Background heartbeat loop."""

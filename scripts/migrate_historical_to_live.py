@@ -22,7 +22,7 @@ def migrate_historical_to_live(
     time_str: str,
     interval: int,
     logger=None,
-    on_duplicate: str = 'skip'
+    on_duplicate: str = 'update'
 ) -> int:
     """
     Migrate historical candle data to live table.
@@ -33,7 +33,7 @@ def migrate_historical_to_live(
         time_str: Time in format HH:MM:SS (e.g., '15:30:00')
         interval: Candle interval in minutes (5, 15, 60, etc.)
         logger: Optional logging function
-        on_duplicate: How to handle duplicates - 'skip' or 'replace' (default: 'skip')
+        on_duplicate: How to handle duplicates - 'skip', 'update', or 'replace' (default: 'update')
         
     Returns:
         Number of rows migrated
@@ -79,7 +79,7 @@ def migrate_historical_to_live(
                 'cutoff_datetime': cutoff_datetime,
                 'target_date': target_date.date()
             })
-            record_count = result.fetchone()[0]
+            record_count = result.fetchone()[0] # type: ignore
             
             if record_count == 0:
                 logger(f"No records found to migrate from {source_table}", "WARNING")
@@ -113,57 +113,59 @@ def migrate_historical_to_live(
             logger(f"Retrieved {len(df)} records from {source_table}")
             logger(f"Data date range: {df['datetime'].min()} to {df['datetime'].max()}")
             
+            # Debug: Check volume values in source data
+            logger(f"Volume statistics from source table:", "DEBUG")
+            logger(f"  - Min volume: {df['volume'].min()}", "DEBUG")
+            logger(f"  - Max volume: {df['volume'].max()}", "DEBUG")
+            logger(f"  - Mean volume: {df['volume'].mean():.2f}", "DEBUG")
+            logger(f"  - Non-zero count: {(df['volume'] > 0).sum()} out of {len(df)}", "DEBUG")
+            
+            # Show sample of first few rows
+            if len(df) > 0:
+                logger(f"Sample data (first 3 rows):", "DEBUG")
+                for idx, row in df.head(3).iterrows():
+                    logger(f"  - {row['tradingsymbol']} @ {row['datetime']}: O={row['open']}, H={row['high']}, L={row['low']}, C={row['close']}, V={row['volume']}", "DEBUG")
+            
             # Insert into target table with conflict handling
             try:
                 with db_handler.engine.begin() as insert_conn:
-                    if on_duplicate.lower() == 'replace':
-                        logger(f"Using REPLACE mode for duplicates", "INFO")
-                        # Use UPSERT: replace existing records
-                        for _, row in df.iterrows():
-                            insert_query = text(f"""
-                                INSERT INTO {target_table} 
-                                (instrument_token, tradingsymbol, datetime, open, high, low, close, volume)
-                                VALUES (:token, :symbol, :dt, :o, :h, :l, :c, :v)
-                                ON CONFLICT (instrument_token, datetime) 
-                                DO UPDATE SET
+                    conflict_action = "DO NOTHING"
+                    
+                    if on_duplicate.lower() in ['update', 'replace']:
+                        if on_duplicate.lower() == 'replace':
+                            logger(f"Using REPLACE mode for duplicates", "INFO")
+                        else:
+                            logger(f"Using UPDATE mode for duplicates", "INFO")
+                        # Use UPSERT: update existing records
+                        conflict_action = """DO UPDATE SET
                                     tradingsymbol = EXCLUDED.tradingsymbol,
                                     open = EXCLUDED.open,
                                     high = EXCLUDED.high,
                                     low = EXCLUDED.low,
                                     close = EXCLUDED.close,
-                                    volume = EXCLUDED.volume
-                            """)
-                            insert_conn.execute(insert_query, {
-                                'token': int(row['instrument_token']),
-                                'symbol': str(row['tradingsymbol']),
-                                'dt': row['datetime'],
-                                'o': float(row['open']),
-                                'h': float(row['high']),
-                                'l': float(row['low']),
-                                'c': float(row['close']),
-                                'v': float(row['volume'])
-                            })
+                                    volume = EXCLUDED.volume"""
                     else:
                         logger(f"Using SKIP mode for duplicates", "INFO")
-                        # Use INSERT with skip duplicates
-                        for _, row in df.iterrows():
-                            insert_query = text(f"""
-                                INSERT INTO {target_table} 
-                                (instrument_token, tradingsymbol, datetime, open, high, low, close, volume)
-                                VALUES (:token, :symbol, :dt, :o, :h, :l, :c, :v)
-                                ON CONFLICT (instrument_token, datetime) 
-                                DO NOTHING
-                            """)
-                            insert_conn.execute(insert_query, {
-                                'token': int(row['instrument_token']),
-                                'symbol': str(row['tradingsymbol']),
-                                'dt': row['datetime'],
-                                'o': float(row['open']),
-                                'h': float(row['high']),
-                                'l': float(row['low']),
-                                'c': float(row['close']),
-                                'v': float(row['volume'])
-                            })
+                    
+                    # Batch insert with conflict handling
+                    for _, row in df.iterrows():
+                        insert_query = text(f"""
+                            INSERT INTO {target_table} 
+                            (instrument_token, tradingsymbol, datetime, open, high, low, close, volume)
+                            VALUES (:token, :symbol, :dt, :o, :h, :l, :c, :v)
+                            ON CONFLICT (instrument_token, datetime) 
+                            {conflict_action}
+                        """)
+                        insert_conn.execute(insert_query, {
+                            'token': int(row['instrument_token']),
+                            'symbol': str(row['tradingsymbol']),
+                            'dt': row['datetime'],
+                            'o': float(row['open']),
+                            'h': float(row['high']),
+                            'l': float(row['low']),
+                            'c': float(row['close']),
+                            'v': float(row['volume'])
+                        })
                     
                 logger(f"Successfully migrated {len(df)} records to {target_table}", "SUCCESS")
                 return len(df)
@@ -188,7 +190,7 @@ def migrate_all_intervals(
     time_str: str,
     intervals: list,
     logger=None,
-    on_duplicate: str = 'skip'
+    on_duplicate: str = 'update'
 ) -> dict:
     """
     Migrate historical data for multiple intervals.
@@ -199,7 +201,7 @@ def migrate_all_intervals(
         time_str: Time in format HH:MM:SS
         intervals: List of intervals to migrate (e.g., [5, 15, 60])
         logger: Optional logging function
-        on_duplicate: How to handle duplicates - 'skip' or 'replace' (default: 'skip')
+        on_duplicate: How to handle duplicates - 'skip', 'update', or 'replace' (default: 'update')
         
     Returns:
         Dictionary with migration results per interval
@@ -256,9 +258,9 @@ def main():
     )
     parser.add_argument(
         '--on-duplicate',
-        choices=['skip', 'replace'],
-        default='skip',
-        help='How to handle duplicate records: skip (default) or replace'
+        choices=['skip', 'update', 'replace'],
+        default='update',
+        help='How to handle duplicate records: skip (ignore), update (default), or replace'
     )
     
     args = parser.parse_args()

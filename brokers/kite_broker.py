@@ -435,6 +435,7 @@ class KiteBroker(BaseBroker):
             
             # Convert Kite ticks to standardized TickData
             tick_data_list = []
+            debug_logged = False
             
             for tick in ticks:
                 # Skip if tick is not a valid dictionary
@@ -444,15 +445,36 @@ class KiteBroker(BaseBroker):
                 instrument_token = tick.get('instrument_token')
                 if instrument_token is None:
                     continue
+                
+                # Debug: Log tick structure for first tick only
+                if not debug_logged:
+                    self.logger(f"DEBUG: Kite tick keys: {list(tick.keys())}", "DEBUG")
+                    debug_logged = True
                     
                 symbol = self._token_to_symbol.get(instrument_token, f"TOKEN_{instrument_token}")
+                
+                # Extract volume: Try multiple Kite API field names in priority order
+                    # 'last_traded_quantity' = volume traded in this specific tick (CORRECT FIELD)
+                    # 'last_quantity' = alternative field name 
+                    # 'volume_traded' = cumulative volume for the day (fallback - NOTE: this won't accumulate properly in candles)
+                volume = (
+                        tick.get('last_traded_quantity') or 
+                        tick.get('last_quantity') or 
+                        tick.get('volume_traded') or 
+                        tick.get('volume') or 
+                    0
+                )
+                
+                # DEBUG: If all volume fields are 0, log a sample tick to understand structure
+                if volume == 0 and instrument_token in [6401, 2952193]:  # Log for specific stocks
+                    self.logger(f"DEBUG: Zero volume tick for {symbol}: {tick}", "WARNING")
                 
                 tick_data = TickData(
                     instrument_token=instrument_token,
                     symbol=symbol,
                     last_price=tick.get('last_price', 0),
                     timestamp=datetime.now(),
-                    volume=tick.get('volume', 0),
+                    volume=volume,
                     oi=tick.get('oi', 0),
                     depth=tick.get('depth', {})
                 )

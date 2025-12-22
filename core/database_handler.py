@@ -80,55 +80,92 @@ class DatabaseHandler:
             self.logger(f"Error checking table existence: {e}", "ERROR")
             return False
     
-    def save_candles(self, candles: List, table_name: str = 'live_candles_5min') -> int:
+    def save_candles(self, candles: List, table_name: str = 'live_candles_5min', on_duplicate: str = 'update') -> int:
         """
-        Save candles to database.
+        Save candles to database with duplicate handling using efficient bulk insert.
         
         Args:
             candles: List of Candle objects
             table_name: Target table name
+            on_duplicate: How to handle duplicates - 'update' (default), 'skip', or 'error'
             
         Returns:
             Number of candles saved
         """
         if not candles:
             return 0
-        
+
         try:
             # Process all candles without volume filtering
             valid_candles = list(candles)
-            
+
             if not valid_candles:
                 self.logger("No valid candles to save (all had zero volume)", "WARNING")
                 return 0
-            
+
             # Convert valid candles to dataframe
             candle_dicts = [c.to_dict() for c in valid_candles]
             df = pd.DataFrame(candle_dicts)
-            
+
             # Remove tick_count column if it exists (not in current table schema)
             if 'tick_count' in df.columns:
                 df = df.drop(columns=['tick_count'])
-            
+
             # Ensure datetime is datetime type
             if 'datetime' in df.columns:
                 df['datetime'] = pd.to_datetime(df['datetime'])
-            
-            # Save to database
-            with self.engine.connect() as conn:
-                df.to_sql(
-                    table_name,
-                    conn,
-                    if_exists='append',
-                    index=False,
-                    method='multi'
-                )
-            
-            self.logger(f"Saved {len(valid_candles)} candles to {table_name}", "SUCCESS")
+
+            # Save to database with conflict handling
+            with self.engine.begin() as conn:
+                for _, row in df.iterrows():
+                    if on_duplicate == 'update':
+                        query = text(f"""
+                            INSERT INTO {table_name}
+                            (instrument_token, tradingsymbol, datetime, open, high, low, close, volume, created_at)
+                            VALUES (:token, :symbol, :dt, :o, :h, :l, :c, :v, :created_at)
+                            ON CONFLICT (instrument_token, datetime)
+                            DO UPDATE SET
+                                tradingsymbol = EXCLUDED.tradingsymbol,
+                                open = EXCLUDED.open,
+                                high = EXCLUDED.high,
+                                low = EXCLUDED.low,
+                                close = EXCLUDED.close,
+                                volume = EXCLUDED.volume,
+                                created_at = EXCLUDED.created_at
+                        """)
+                    elif on_duplicate == 'skip':
+                        query = text(f"""
+                            INSERT INTO {table_name}
+                            (instrument_token, tradingsymbol, datetime, open, high, low, close, volume, created_at)
+                            VALUES (:token, :symbol, :dt, :o, :h, :l, :c, :v, :created_at)
+                            ON CONFLICT (instrument_token, datetime)
+                            DO NOTHING
+                        """)
+                    else:
+                        query = text(f"""
+                            INSERT INTO {table_name}
+                            (instrument_token, tradingsymbol, datetime, open, high, low, close, volume, created_at)
+                            VALUES (:token, :symbol, :dt, :o, :h, :l, :c, :v, :created_at)
+                        """)
+
+                    conn.execute(query, {
+                        'token': int(row['instrument_token']),
+                        'symbol': str(row['tradingsymbol']),
+                        'dt': row['datetime'],
+                        'o': float(row['open']),
+                        'h': float(row['high']),
+                        'l': float(row['low']),
+                        'c': float(row['close']),
+                        'v': float(row['volume']),
+                        'created_at': row.get('created_at', datetime.now())
+                    })
+
             return len(valid_candles)
             
         except Exception as e:
             self.logger(f"Error saving candles to database: {e}", "ERROR")
+            import traceback
+            self.logger(f"Traceback: {traceback.format_exc()}", "ERROR")
             return 0
     
     def get_latest_candle(self, symbol: str, table_name: str = 'merged_candles_5min') -> Optional[Dict[str, Any]]:
