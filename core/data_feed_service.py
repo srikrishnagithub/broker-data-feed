@@ -113,13 +113,14 @@ class DataFeedService:
             
             # Process each tick
             for tick in ticks:
-                # Skip ticks with zero volume and generate warning
+                # Skip ticks with zero volume and generate warning only during market hours
                 if tick.volume == 0:
-                    self.logger(
-                        f"Skipping zero-volume tick for {tick.symbol} at {tick.timestamp.strftime('%Y-%m-%d %H:%M:%S')} "
-                        f"(price: {tick.last_price:.2f}, market_hours: {self._is_market_hours()})",
-                        "WARNING"
-                    )
+                    if self._is_market_hours():
+                        self.logger(
+                            f"Skipping zero-volume tick for {tick.symbol} at {tick.timestamp.strftime('%Y-%m-%d %H:%M:%S')} "
+                            f"(price: {tick.last_price:.2f}, market_hours: {self._is_market_hours()})",
+                            "WARNING"
+                        )
                     continue
                 
                 self.aggregator.process_tick(
