@@ -137,6 +137,12 @@ class DataFeedService:
         """
         try:
             self.logger(f"_on_candle_complete called with {len(candles)} candles", "DEBUG")
+            
+            # Check if we're in market hours before saving
+            if not self._is_market_hours():
+                self.logger(f"Off-market hours: Skipping save for {len(candles)} candles", "INFO")
+                return
+            
             # Process candles without volume filtering
             valid_candles = list(candles)
 

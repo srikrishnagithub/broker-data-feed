@@ -360,6 +360,19 @@ def main():
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
         
+        # Aggregate existing 5-min candles into higher timeframes on startup
+        log_message("Aggregating existing 5-min candles into higher timeframes...", "INFO")
+        intervals_to_aggregate = [i for i in service_config['candle_intervals'] if i > 5]
+        if intervals_to_aggregate:
+            results = db_handler.aggregate_candles_on_startup(
+                source_interval=5,
+                target_intervals=intervals_to_aggregate
+            )
+            for interval, count in results.items():
+                log_message(f"Created/updated {count} candles in live_candles_{interval}min", "SUCCESS")
+        else:
+            log_message("No higher timeframes configured, skipping aggregation", "INFO")
+        
         # Start service
         log_message(f"Starting service with {len(instruments)} instruments...", "INFO")
         log_message(f"Candle intervals: {service_config['candle_intervals']} minutes", "INFO")

@@ -237,6 +237,91 @@ class DatabaseHandler:
             self.logger(f"Error getting candle count: {e}", "ERROR")
             return 0
     
+    def aggregate_candles_on_startup(self, source_interval: int = 5, target_intervals: List[int] = None) -> Dict[int, int]:
+        """
+        Aggregate lower timeframe candles into higher timeframes on startup.
+        
+        Args:
+            source_interval: Source interval in minutes (default: 5)
+            target_intervals: List of target intervals to aggregate into (default: [15, 60])
+            
+        Returns:
+            Dictionary with count of candles created per interval
+        """
+        if target_intervals is None:
+            target_intervals = [15, 60]
+        
+        results = {}
+        source_table = f'live_candles_{source_interval}min'
+        
+        try:
+            # Check if source table exists and has data
+            if not self.check_table_exists(source_table):
+                self.logger(f"Source table {source_table} does not exist", "WARNING")
+                return results
+            
+            for target_interval in target_intervals:
+                if target_interval <= source_interval:
+                    self.logger(f"Target interval {target_interval} must be greater than source {source_interval}", "WARNING")
+                    continue
+                
+                if target_interval % source_interval != 0:
+                    self.logger(f"Target interval {target_interval} must be a multiple of source {source_interval}", "WARNING")
+                    continue
+                
+                target_table = f'live_candles_{target_interval}min'
+                
+                # Check if target table exists
+                if not self.check_table_exists(target_table):
+                    self.logger(f"Target table {target_table} does not exist", "WARNING")
+                    continue
+                
+                self.logger(f"Aggregating {source_interval}min to {target_interval}min...", "INFO")
+                
+                # Aggregate using SQL
+                # Group by instrument and time periods that align with target interval
+                with self.engine.begin() as conn:
+                    # Use date_trunc to group by target interval
+                    aggregate_query = text(f"""
+                        INSERT INTO {target_table} 
+                        (instrument_token, tradingsymbol, datetime, open, high, low, close, volume)
+                        SELECT 
+                            instrument_token,
+                            tradingsymbol,
+                            date_trunc('hour', datetime) + 
+                                (EXTRACT(minute FROM datetime)::int / {target_interval}) * INTERVAL '{target_interval} minutes' as datetime,
+                            (array_agg(open ORDER BY datetime ASC))[1] as open,
+                            MAX(high) as high,
+                            MIN(low) as low,
+                            (array_agg(close ORDER BY datetime DESC))[1] as close,
+                            SUM(volume) as volume
+                        FROM {source_table}
+                        GROUP BY instrument_token, tradingsymbol, 
+                            date_trunc('hour', datetime) + 
+                            (EXTRACT(minute FROM datetime)::int / {target_interval}) * INTERVAL '{target_interval} minutes'
+                        ON CONFLICT (instrument_token, datetime) 
+                        DO UPDATE SET
+                            tradingsymbol = EXCLUDED.tradingsymbol,
+                            open = EXCLUDED.open,
+                            high = EXCLUDED.high,
+                            low = EXCLUDED.low,
+                            close = EXCLUDED.close,
+                            volume = EXCLUDED.volume
+                    """)
+                    
+                    result = conn.execute(aggregate_query)
+                    count = result.rowcount
+                    results[target_interval] = count
+                    self.logger(f"Aggregated {count} candles into {target_table}", "SUCCESS")
+            
+            return results
+            
+        except Exception as e:
+            self.logger(f"Error during candle aggregation: {e}", "ERROR")
+            import traceback
+            self.logger(f"Traceback: {traceback.format_exc()}", "ERROR")
+            return results
+    
     def close(self):
         """Close database connection."""
         try:
