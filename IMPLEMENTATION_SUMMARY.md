@@ -336,6 +336,7 @@ if args.broker == 'upstox':
    - Ping/pong monitoring
    - Automatic reconnection on stale connection
    - Connection quality metrics
+    - Hot-reloads KITE_ACCESS_TOKEN from .env on reconnect and rebuilds the WebSocket; update .env and let it reconnect to take effect
 
 ## Implementation Notes
 

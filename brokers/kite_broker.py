@@ -45,6 +45,7 @@ class KiteBroker(BaseBroker):
         self.kite: Optional[KiteConnect] = None
         self._tick_callback: Optional[Callable] = None
         self._connection_established = False
+        self._reconnect_lock = threading.Lock()
         
         # Instrument token to symbol mapping
         self._token_to_symbol: Dict[int, str] = {}
@@ -157,6 +158,111 @@ class KiteBroker(BaseBroker):
             captured_output = stderr_capture.getvalue()
             if captured_output and "signal only works in main thread" in captured_output:
                 self.logger("WebSocket signal handler warning suppressed (non-fatal)", "WARNING")
+
+    def _rebuild_websocket(self) -> bool:
+        """Rebuild KiteTicker instance and reconnect, preserving subscriptions.
+        
+        Returns:
+            True if rebuilt and connected, False otherwise.
+        """
+        try:
+            # Close existing socket if any
+            try:
+                if self.kws:
+                    self.kws.close()  # type: ignore
+            except Exception:
+                pass
+
+            # Create new KiteTicker with current credentials
+            self.kws = KiteTicker(self.api_key, self.access_token)
+
+            # Reattach callbacks
+            self.kws.on_connect = self._on_connect  # type: ignore
+            self.kws.on_close = self._on_close  # type: ignore
+            self.kws.on_error = self._on_error  # type: ignore
+            self.kws.on_ticks = self._on_ticks  # type: ignore
+            self.kws.on_reconnect = self._on_reconnect  # type: ignore
+            self.kws.on_noreconnect = self._on_noreconnect  # type: ignore
+
+            # Reset connection flags
+            self._connection_established = False
+            self._connected = False
+
+            # Connect in background
+            connect_thread = threading.Thread(
+                target=self._connect_websocket,
+                daemon=True,
+                name="kite_websocket_rebuild"
+            )
+            connect_thread.start()
+
+            # Wait for connection to establish
+            timeout = 10
+            start = time.time()
+            while not self._connection_established and (time.time() - start) < timeout:
+                time.sleep(0.1)
+
+            if not self._connection_established:
+                self.logger("Rebuilt WebSocket connection timed out", "ERROR")
+                return False
+
+            self._connected = True
+            self.logger("Rebuilt Kite WebSocket with updated credentials", "SUCCESS")
+
+            # Resubscribe handled in _on_connect, but do it defensively here too
+            if self._instruments:
+                try:
+                    self.kws.subscribe(self._instruments)  # type: ignore
+                    self.kws.set_mode(self.kws.MODE_FULL, self._instruments)  # type: ignore
+                except Exception as sub_e:
+                    self.logger(f"Resubscribe after rebuild failed: {sub_e}", "WARNING")
+
+            return True
+        except Exception as e:
+            self.logger(f"Failed to rebuild WebSocket: {e}", "ERROR")
+            return False
+
+    def _maybe_reload_token(self) -> bool:
+        """Reload .env and refresh tokens if changed. Returns True if token updated."""
+        try:
+            # Reload environment (override existing values)
+            load_dotenv(override=True)
+
+            new_api_key = os.getenv('KITE_API_KEY') or self.api_key
+            new_access_token = os.getenv('KITE_ACCESS_TOKEN')
+
+            if not new_access_token:
+                return False
+
+            if new_access_token != self.access_token or new_api_key != self.api_key:
+                old_api_mask = (self.api_key[:6] + "..." + self.api_key[-4:]) if self.api_key and len(self.api_key) > 10 else "SET"
+                old_tok_mask = (self.access_token[:6] + "..." + self.access_token[-4:]) if self.access_token and len(self.access_token) > 10 else "SET"
+                new_api_mask = (new_api_key[:6] + "..." + new_api_key[-4:]) if new_api_key and len(new_api_key) > 10 else "SET"
+                new_tok_mask = (new_access_token[:6] + "..." + new_access_token[-4:]) if len(new_access_token) > 10 else "SET"
+
+                self.logger(
+                    f"Detected credential change. API {old_api_mask} -> {new_api_mask}; TOKEN {old_tok_mask} -> {new_tok_mask}",
+                    "INFO"
+                )
+
+                # Update in-memory credentials
+                self.api_key = new_api_key
+                self.access_token = new_access_token
+
+                # Update KiteConnect REST client
+                try:
+                    if self.kite:
+                        self.kite.set_access_token(self.access_token)
+                except Exception as e:
+                    self.logger(f"Failed to update KiteConnect token: {e}", "WARNING")
+
+                # Rebuild websocket with new token
+                return self._rebuild_websocket()
+
+            return False
+        except Exception as e:
+            self.logger(f"Token reload check failed: {e}", "WARNING")
+            return False
     
     def disconnect(self):
         """Disconnect from Kite WebSocket."""
@@ -273,6 +379,14 @@ class KiteBroker(BaseBroker):
         """WebSocket connection established."""
         self._connection_established = True
         self.logger("Kite WebSocket connection established", "SUCCESS")
+        # Ensure subscriptions are active after any (re)connect
+        try:
+            if self._instruments and self.kws:
+                self.kws.subscribe(self._instruments)  # type: ignore
+                self.kws.set_mode(self.kws.MODE_FULL, self._instruments)  # type: ignore
+                self.logger(f"Re-subscribed to {len(self._instruments)} instruments", "INFO")
+        except Exception as e:
+            self.logger(f"Auto-resubscribe failed: {e}", "WARNING")
     
     def _on_close(self, ws, code, reason):
         """WebSocket connection closed."""
@@ -287,6 +401,14 @@ class KiteBroker(BaseBroker):
     def _on_reconnect(self, ws, attempts_count):
         """WebSocket reconnecting."""
         self.logger(f"Kite WebSocket reconnecting (attempt {attempts_count})...", "INFO")
+        # Attempt token hot-reload once per reconnect cycle
+        if self._reconnect_lock.acquire(blocking=False):
+            try:
+                updated = self._maybe_reload_token()
+                if updated:
+                    self.logger("Token updated; websocket rebuilt and reconnect initiated", "SUCCESS")
+            finally:
+                self._reconnect_lock.release()
     
     def _on_noreconnect(self, ws):
         """WebSocket reconnection failed."""
