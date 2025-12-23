@@ -68,7 +68,7 @@ class DataFeedService:
         """
         Check if current time is within market hours.
         
-        NSE market hours: Monday-Friday, 9:15 AM - 3:30 PM IST
+        NSE market hours: Monday-Friday, 9:10 AM - 3:45 PM IST
         
         Returns:
             True if market is open, False otherwise
@@ -79,9 +79,9 @@ class DataFeedService:
         if now.weekday() >= 5:  # Saturday or Sunday
             return False
         
-        # Check time: 9:15 AM to 3:30 PM IST
-        market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
-        market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+        # Check time: 9:10 AM to 3:45 PM IST
+        market_open = now.replace(hour=9, minute=10, second=0, microsecond=0)
+        market_close = now.replace(hour=15, minute=45, second=0, microsecond=0)
         
         return market_open <= now <= market_close
     

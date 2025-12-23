@@ -110,55 +110,57 @@ class DatabaseHandler:
             # Remove tick_count column if it exists (not in current table schema)
             if 'tick_count' in df.columns:
                 df = df.drop(columns=['tick_count'])
+            
+            # Remove created_at column if it exists (not in table schema)
+            if 'created_at' in df.columns:
+                df = df.drop(columns=['created_at'])
 
-            # Ensure datetime is datetime type
+            # Ensure datetime columns are Python datetime objects (not pandas Timestamp)
             if 'datetime' in df.columns:
-                df['datetime'] = pd.to_datetime(df['datetime'])
+                df['datetime'] = df['datetime'].apply(lambda x: x.to_pydatetime() if hasattr(x, 'to_pydatetime') else x)
+                
+                with self.engine.connect() as conn:
+                    for _, row in df.iterrows():
+                        if on_duplicate == 'update':
+                            query = text(f"""
+                                INSERT INTO {table_name}
+                                (instrument_token, tradingsymbol, datetime, open, high, low, close, volume)
+                                VALUES (:token, :symbol, :dt, :o, :h, :l, :c, :v)
+                                ON CONFLICT (instrument_token, datetime)
+                                DO UPDATE SET
+                                    tradingsymbol = EXCLUDED.tradingsymbol,
+                                    open = EXCLUDED.open,
+                                    high = EXCLUDED.high,
+                                    low = EXCLUDED.low,
+                                    close = EXCLUDED.close,
+                                    volume = EXCLUDED.volume
+                            """)
+                        elif on_duplicate == 'skip':
+                            query = text(f"""
+                                INSERT INTO {table_name}
+                                (instrument_token, tradingsymbol, datetime, open, high, low, close, volume)
+                                VALUES (:token, :symbol, :dt, :o, :h, :l, :c, :v)
+                                ON CONFLICT (instrument_token, datetime)
+                                DO NOTHING
+                            """)
+                        else:
+                            query = text(f"""
+                                INSERT INTO {table_name}
+                                (instrument_token, tradingsymbol, datetime, open, high, low, close, volume)
+                                VALUES (:token, :symbol, :dt, :o, :h, :l, :c, :v)
+                            """)
 
-            # Save to database with conflict handling
-            with self.engine.begin() as conn:
-                for _, row in df.iterrows():
-                    if on_duplicate == 'update':
-                        query = text(f"""
-                            INSERT INTO {table_name}
-                            (instrument_token, tradingsymbol, datetime, open, high, low, close, volume, created_at)
-                            VALUES (:token, :symbol, :dt, :o, :h, :l, :c, :v, :created_at)
-                            ON CONFLICT (instrument_token, datetime)
-                            DO UPDATE SET
-                                tradingsymbol = EXCLUDED.tradingsymbol,
-                                open = EXCLUDED.open,
-                                high = EXCLUDED.high,
-                                low = EXCLUDED.low,
-                                close = EXCLUDED.close,
-                                volume = EXCLUDED.volume,
-                                created_at = EXCLUDED.created_at
-                        """)
-                    elif on_duplicate == 'skip':
-                        query = text(f"""
-                            INSERT INTO {table_name}
-                            (instrument_token, tradingsymbol, datetime, open, high, low, close, volume, created_at)
-                            VALUES (:token, :symbol, :dt, :o, :h, :l, :c, :v, :created_at)
-                            ON CONFLICT (instrument_token, datetime)
-                            DO NOTHING
-                        """)
-                    else:
-                        query = text(f"""
-                            INSERT INTO {table_name}
-                            (instrument_token, tradingsymbol, datetime, open, high, low, close, volume, created_at)
-                            VALUES (:token, :symbol, :dt, :o, :h, :l, :c, :v, :created_at)
-                        """)
-
-                    conn.execute(query, {
-                        'token': int(row['instrument_token']),
-                        'symbol': str(row['tradingsymbol']),
-                        'dt': row['datetime'],
-                        'o': float(row['open']),
-                        'h': float(row['high']),
-                        'l': float(row['low']),
-                        'c': float(row['close']),
-                        'v': float(row['volume']),
-                        'created_at': row.get('created_at', datetime.now())
-                    })
+                        conn.execute(query, {
+                            'token': int(row['instrument_token']),
+                            'symbol': str(row['tradingsymbol']),
+                            'dt': row['datetime'],
+                            'o': float(row['open']),
+                            'h': float(row['high']),
+                            'l': float(row['low']),
+                            'c': float(row['close']),
+                            'v': float(row['volume'])
+                        })
+                    conn.commit()
 
             return len(valid_candles)
             
