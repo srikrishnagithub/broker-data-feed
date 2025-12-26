@@ -47,6 +47,14 @@ class Config:
                 'access_token': os.getenv('KITE_ACCESS_TOKEN'),
                 'api_secret': os.getenv('KITE_API_SECRET')
             }
+        elif broker_name.lower() == 'kotak' or broker_name.lower() == 'kotak_neo':
+            return {
+                'consumer_key': os.getenv('KOTAK_CONSUMER_KEY'),
+                'consumer_secret': os.getenv('KOTAK_CONSUMER_SECRET'),
+                'mobile_number': os.getenv('KOTAK_MOBILE_NUMBER'),
+                'password': os.getenv('KOTAK_PASSWORD'),
+                'mpin': os.getenv('KOTAK_MPIN')
+            }
         else:
             raise ValueError(f"Unsupported broker: {broker_name}")
     
@@ -85,9 +93,12 @@ class Config:
         return os.getenv('INSTRUMENTS_FILE')
     
     @staticmethod
-    def validate() -> List[str]:
+    def validate(broker_name: str = 'kite') -> List[str]:
         """
         Validate configuration.
+        
+        Args:
+            broker_name: Name of broker to validate (default: 'kite')
         
         Returns:
             List of validation errors (empty if valid)
@@ -98,11 +109,28 @@ class Config:
         if not os.getenv('PG_CONN_STR'):
             errors.append("PG_CONN_STR not set in environment")
         
-        # Check Kite credentials
-        if not os.getenv('KITE_API_KEY'):
-            errors.append("KITE_API_KEY not set in environment")
+        # Check broker-specific credentials
+        if broker_name.lower() == 'kite':
+            if not os.getenv('KITE_API_KEY'):
+                errors.append("KITE_API_KEY not set in environment")
+            
+            if not os.getenv('KITE_ACCESS_TOKEN'):
+                errors.append("KITE_ACCESS_TOKEN not set in environment")
         
-        if not os.getenv('KITE_ACCESS_TOKEN'):
-            errors.append("KITE_ACCESS_TOKEN not set in environment")
+        elif broker_name.lower() == 'kotak' or broker_name.lower() == 'kotak_neo':
+            if not os.getenv('KOTAK_CONSUMER_KEY'):
+                errors.append("KOTAK_CONSUMER_KEY not set in environment")
+            
+            if not os.getenv('KOTAK_CONSUMER_SECRET'):
+                errors.append("KOTAK_CONSUMER_SECRET not set in environment")
+            
+            if not os.getenv('KOTAK_MOBILE_NUMBER'):
+                errors.append("KOTAK_MOBILE_NUMBER not set in environment")
+            
+            if not os.getenv('KOTAK_PASSWORD'):
+                errors.append("KOTAK_PASSWORD not set in environment")
+            
+            if not os.getenv('KOTAK_MPIN'):
+                errors.append("KOTAK_MPIN not set in environment")
         
         return errors

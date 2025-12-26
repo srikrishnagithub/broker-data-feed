@@ -226,6 +226,9 @@ Optional environment variables:
                        help='File containing symbols (one per line)')
     parser.add_argument('--symbols-from-db', action='store_true',
                        help='Load symbols from database')
+    parser.add_argument('--broker', default='kite',
+                       choices=['kite', 'kotak', 'kotak_neo'],
+                       help='Broker to use (default: kite)')
     parser.add_argument('--test-broker', action='store_true',
                        help='Test broker connection and exit')
     parser.add_argument('--test-database', action='store_true',
@@ -244,11 +247,14 @@ def main():
         # Parse arguments
         args = parse_arguments()
         
+        # Determine broker
+        broker_name = args.broker.lower()
+        
         # Load configuration
         config = Config(args.config_file)
         
-        # Validate configuration
-        errors = config.validate()
+        # Validate configuration for selected broker
+        errors = config.validate(broker_name)
         if errors:
             log_message("Configuration validation failed:", "ERROR")
             for error in errors:
@@ -257,7 +263,7 @@ def main():
         
         # Get configurations
         db_config = config.get_database_config()
-        broker_config = config.get_broker_config('kite')
+        broker_config = config.get_broker_config(broker_name)
         service_config = config.get_service_config()
         
         # Initialize database handler
@@ -291,8 +297,17 @@ def main():
                 return 1
         
         # Initialize broker
-        log_message("Initializing Kite broker...", "INFO")
-        broker = KiteBroker(broker_config, logger=log_message)
+        log_message(f"Initializing {broker_name.upper()} broker...", "INFO")
+        
+        if broker_name == 'kite':
+            from brokers.kite_broker import KiteBroker
+            broker = KiteBroker(broker_config, logger=log_message)
+        elif broker_name in ['kotak', 'kotak_neo']:
+            from brokers.kotak_neo_broker import KotakNeoBroker
+            broker = KotakNeoBroker(broker_config, logger=log_message)
+        else:
+            log_message(f"Unsupported broker: {broker_name}", "ERROR")
+            return 1
         
         # Test broker if requested
         if args.test_broker:
