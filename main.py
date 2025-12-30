@@ -153,12 +153,13 @@ def check_required_tables(db_handler: DatabaseHandler) -> bool:
     return True
 
 
-def load_instruments_from_database(db_handler: DatabaseHandler) -> dict:
+def load_instruments_from_database(db_handler: DatabaseHandler, broker_name: str = 'kite') -> dict:
     """
-    Load instruments from database - symbols from Fundamental table with tokens from instruments table.
+    Load instruments from database - symbols from Fundamental table with tokens from broker-specific instruments table.
     
     Args:
         db_handler: Database handler instance
+        broker_name: Name of the broker ('kite' or 'kotak')
         
     Returns:
         Dictionary mapping symbols to instrument tokens
@@ -166,12 +167,15 @@ def load_instruments_from_database(db_handler: DatabaseHandler) -> dict:
     try:
         from sqlalchemy import text
         
-        query = text("""
+        # Determine the instruments table based on broker
+        instruments_table = 'kotak_instruments' if broker_name in ['kotak', 'kotak_neo'] else 'instruments'
+        
+        query = text(f"""
             SELECT DISTINCT 
                 f."SYMBOL" as tradingsymbol,
                 i.instrument_token
             FROM fundamental f
-            JOIN instruments i ON f."SYMBOL" = i.tradingsymbol
+            JOIN {instruments_table} i ON f."SYMBOL" = i.tradingsymbol
             ORDER BY f."SYMBOL"
         """)
         
@@ -179,7 +183,7 @@ def load_instruments_from_database(db_handler: DatabaseHandler) -> dict:
             result = conn.execute(query)
             symbol_to_token = {row[0]: row[1] for row in result}
         
-        log_message(f"Loaded {len(symbol_to_token)} symbols with instrument tokens from database", "INFO")
+        log_message(f"Loaded {len(symbol_to_token)} symbols with instrument tokens from {instruments_table}", "INFO")
         return symbol_to_token
         
     except Exception as e:
@@ -336,7 +340,7 @@ def main():
                 symbol_to_token = broker.load_instruments(symbols)
         elif args.symbols_from_db:
             log_message("Loading symbols and instrument tokens from database...", "INFO")
-            symbol_to_token = load_instruments_from_database(db_handler)
+            symbol_to_token = load_instruments_from_database(db_handler, broker_name)
             symbols = list(symbol_to_token.keys())
             
             # Populate broker's internal mapping

@@ -220,7 +220,7 @@ class DataFeedService:
                 
                 self.logger(
                     f"[HEARTBEAT] Ticks: {stats['tick_count']}, "
-                    f"Candles: {stats['candle_count']}"
+                    f"Candles saved: {stats['candle_count']}"
                     f"{time_since_tick} ({market_status})",
                     "INFO"
                 )
