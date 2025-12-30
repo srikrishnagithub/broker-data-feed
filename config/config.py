@@ -100,6 +100,9 @@ class Config:
         Args:
             broker_name: Name of broker to validate (default: 'kite')
         
+        Args:
+            broker_name: Name of broker to validate (default: 'kite')
+        
         Returns:
             List of validation errors (empty if valid)
         """
@@ -109,6 +112,13 @@ class Config:
         if not os.getenv('PG_CONN_STR'):
             errors.append("PG_CONN_STR not set in environment")
         
+        # Check broker-specific credentials
+        if broker_name.lower() == 'kite':
+            if not os.getenv('KITE_API_KEY'):
+                errors.append("KITE_API_KEY not set in environment")
+            
+            if not os.getenv('KITE_ACCESS_TOKEN'):
+                errors.append("KITE_ACCESS_TOKEN not set in environment")
         # Check broker-specific credentials
         if broker_name.lower() == 'kite':
             if not os.getenv('KITE_API_KEY'):

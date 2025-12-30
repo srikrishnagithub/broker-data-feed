@@ -4,7 +4,9 @@ Independent live OHLC data feeding service for Trading-V2 with multi-broker supp
 
 ## Features
 
-- **Multi-broker Support**: Extensible architecture to support multiple brokers (currently Kite/Zerodha)
+- **Multi-broker Support**: Extensible architecture to support multiple brokers
+  - **Kite (Zerodha)**: Full support with automatic token refresh
+  - **KOTAK NEO**: Full support with auto re-authentication and symbol limits
 - **Real-time Tick Processing**: Converts live tick data to OHLC candles
 - **Multiple Timeframes**: Supports multiple candle intervals simultaneously (1min, 5min, 15min, etc.)
 - **Database Integration**: Automatic storage to existing Trading-V2 database tables
@@ -22,7 +24,9 @@ broker_data_feed/
 │   ├── database_handler.py    # Database operations
 │   └── data_feed_service.py   # Main service coordinator
 ├── brokers/
-│   └── kite_broker.py         # Kite/Zerodha implementation
+│   ├── kite_broker.py         # Kite/Zerodha implementation
+│   ├── kotak_neo_broker.py    # KOTAK NEO implementation
+│   └── mqtt_publisher.py      # MQTT integration
 ├── config/
 │   └── config.py              # Configuration management
 ├── tests/
@@ -54,27 +58,42 @@ MQTT_PASSWORD=your_password
 
 ## Usage
 
-### Start with specific symbols
+### Start with Kite Broker (Default)
+
 ```bash
+# Start with specific symbols
 python broker_data_feed/main.py --symbols RELIANCE INFY TCS HDFCBANK
-```
 
-### Start with symbols from file
-```bash
+# Start with symbols from file
 python broker_data_feed/main.py --symbols-file instruments.txt
-```
 
-### Start with symbols from database
-```bash
+# Start with symbols from database
 python broker_data_feed/main.py --symbols-from-db
-```
 
-### Test broker connection
-```bash
+# Test broker connection
 python broker_data_feed/main.py --test-broker
 ```
 
-### Test database connection
+### Start with KOTAK NEO Broker
+
+```bash
+# Start with specific symbols
+python broker_data_feed/main.py --broker kotak --symbols RELIANCE INFY TCS
+
+# Start with symbols from file (max 100 symbols)
+python broker_data_feed/main.py --broker kotak --symbols-file instruments.txt
+
+# Start with symbols from database
+python broker_data_feed/main.py --broker kotak --symbols-from-db
+
+# Test broker connection
+python broker_data_feed/main.py --broker kotak --test-broker
+```
+
+**Note**: KOTAK NEO has a limit of 100 symbols per connection. See [KOTAK_NEO_INTEGRATION.md](KOTAK_NEO_INTEGRATION.md) for details.
+
+### Test Database Connection
+
 ```bash
 python broker_data_feed/main.py --test-database
 ```
@@ -86,8 +105,13 @@ python broker_data_feed/main.py --test-database
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `PG_CONN_STR` | PostgreSQL connection string | Required |
-| `KITE_API_KEY` | Kite API key | Required |
-| `KITE_ACCESS_TOKEN` | Kite access token | Required |
+| `KITE_API_KEY` | Kite API key | Required for Kite |
+| `KITE_ACCESS_TOKEN` | Kite access token | Required for Kite |
+| `KOTAK_CONSUMER_KEY` | KOTAK consumer key | Required for KOTAK NEO |
+| `KOTAK_CONSUMER_SECRET` | KOTAK consumer secret | Required for KOTAK NEO |
+| `KOTAK_MOBILE_NUMBER` | KOTAK mobile number | Required for KOTAK NEO |
+| `KOTAK_PASSWORD` | KOTAK password | Required for KOTAK NEO |
+| `KOTAK_MPIN` | KOTAK MPIN | Required for KOTAK NEO |
 | `CANDLE_INTERVALS` | Candle intervals (minutes) | `5` |
 | `HEARTBEAT_INTERVAL` | Heartbeat interval (seconds) | `30` |
 | `CANDLE_TABLE_NAME` | Target database table | `merged_candles_5min` |
@@ -118,8 +142,13 @@ class NewBroker(BaseBroker):
     # Implement other abstract methods...
 ```
 
-2. Add broker configuration to `config.py`
+2. Add broker configuration to `config/config.py`
 3. Update `main.py` to support the new broker
+4. Create integration documentation (see `KOTAK_NEO_INTEGRATION.md` as example)
+
+## Broker-Specific Documentation
+
+- [KOTAK NEO Integration Guide](KOTAK_NEO_INTEGRATION.md) - Detailed KOTAK NEO setup and usage
 
 ## Database Schema
 

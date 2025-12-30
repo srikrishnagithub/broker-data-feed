@@ -153,12 +153,13 @@ def check_required_tables(db_handler: DatabaseHandler) -> bool:
     return True
 
 
-def load_instruments_from_database(db_handler: DatabaseHandler) -> dict:
+def load_instruments_from_database(db_handler: DatabaseHandler, broker_name: str = 'kite') -> dict:
     """
-    Load instruments from database - symbols from Fundamental table with tokens from instruments table.
+    Load instruments from database - symbols from Fundamental table with tokens from broker-specific instruments table.
     
     Args:
         db_handler: Database handler instance
+        broker_name: Name of the broker ('kite' or 'kotak')
         
     Returns:
         Dictionary mapping symbols to instrument tokens
@@ -166,12 +167,15 @@ def load_instruments_from_database(db_handler: DatabaseHandler) -> dict:
     try:
         from sqlalchemy import text
         
-        query = text("""
+        # Determine the instruments table based on broker
+        instruments_table = 'kotak_instruments' if broker_name in ['kotak', 'kotak_neo'] else 'instruments'
+        
+        query = text(f"""
             SELECT DISTINCT 
                 f."SYMBOL" as tradingsymbol,
                 i.instrument_token
             FROM fundamental f
-            JOIN instruments i ON f."SYMBOL" = i.tradingsymbol
+            JOIN {instruments_table} i ON f."SYMBOL" = i.tradingsymbol
             ORDER BY f."SYMBOL"
         """)
         
@@ -179,7 +183,7 @@ def load_instruments_from_database(db_handler: DatabaseHandler) -> dict:
             result = conn.execute(query)
             symbol_to_token = {row[0]: row[1] for row in result}
         
-        log_message(f"Loaded {len(symbol_to_token)} symbols with instrument tokens from database", "INFO")
+        log_message(f"Loaded {len(symbol_to_token)} symbols with instrument tokens from {instruments_table}", "INFO")
         return symbol_to_token
         
     except Exception as e:
@@ -250,9 +254,14 @@ def main():
         # Determine broker
         broker_name = args.broker.lower()
         
+        # Determine broker
+        broker_name = args.broker.lower()
+        
         # Load configuration
         config = Config(args.config_file)
         
+        # Validate configuration for selected broker
+        errors = config.validate(broker_name)
         # Validate configuration for selected broker
         errors = config.validate(broker_name)
         if errors:
@@ -263,6 +272,7 @@ def main():
         
         # Get configurations
         db_config = config.get_database_config()
+        broker_config = config.get_broker_config(broker_name)
         broker_config = config.get_broker_config(broker_name)
         service_config = config.get_service_config()
         
@@ -297,6 +307,17 @@ def main():
                 return 1
         
         # Initialize broker
+        log_message(f"Initializing {broker_name.upper()} broker...", "INFO")
+        
+        if broker_name == 'kite':
+            from brokers.kite_broker import KiteBroker
+            broker = KiteBroker(broker_config, logger=log_message)
+        elif broker_name in ['kotak', 'kotak_neo']:
+            from brokers.kotak_neo_broker import KotakNeoBroker
+            broker = KotakNeoBroker(broker_config, logger=log_message)
+        else:
+            log_message(f"Unsupported broker: {broker_name}", "ERROR")
+            return 1
         log_message(f"Initializing {broker_name.upper()} broker...", "INFO")
         
         if broker_name == 'kite':
