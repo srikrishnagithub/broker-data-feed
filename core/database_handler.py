@@ -121,6 +121,11 @@ class DatabaseHandler:
                 
                 with self.engine.connect() as conn:
                     for _, row in df.iterrows():
+                        # Skip candles with invalid instrument_token
+                        if pd.isna(row['instrument_token']) or row['instrument_token'] is None:
+                            self.logger(f"Skipping candle with None token: {row['tradingsymbol']}", "WARNING")
+                            continue
+                        
                         if on_duplicate == 'update':
                             query = text(f"""
                                 INSERT INTO {table_name}
