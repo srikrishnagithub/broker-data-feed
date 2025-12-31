@@ -170,24 +170,63 @@ def load_instruments_from_database(db_handler: DatabaseHandler, broker_name: str
         # Determine the instruments table based on broker
         instruments_table = 'kotak_instruments' if broker_name in ['kotak', 'kotak_neo'] else 'instruments'
         
-        query = text(f"""
-            SELECT DISTINCT 
-                f."SYMBOL" as tradingsymbol,
-                i.instrument_token
-            FROM fundamental f
-            JOIN {instruments_table} i ON f."SYMBOL" = i.tradingsymbol
-            ORDER BY f."SYMBOL"
-        """)
+        if broker_name in ['kotak', 'kotak_neo']:
+            # For KOTAK: Match base symbol to trading_symbol variants (AARTIIND to AARTIIND-EQ, AARTIIND-BL, etc)
+            # Priority: -EQ suffix (equity), then -BL suffix (bulk), then exact match
+            query = text("""
+                SELECT 
+                    f."SYMBOL" as symbol,
+                    i.psymbol as token,
+                    CASE 
+                        WHEN i.trading_symbol = f."SYMBOL" THEN 1
+                        WHEN i.trading_symbol = f."SYMBOL" || '-EQ' THEN 2
+                        WHEN i.trading_symbol = f."SYMBOL" || '-BL' THEN 3
+                        ELSE 4
+                    END as priority
+                FROM fundamental f
+                LEFT JOIN kotak_instruments i ON (
+                    i.trading_symbol = f."SYMBOL"
+                    OR i.trading_symbol = f."SYMBOL" || '-EQ'
+                    OR i.trading_symbol = f."SYMBOL" || '-BL'
+                )
+                WHERE i.exchange_segment = 'nse_cm'
+                    AND i.psymbol IS NOT NULL
+                ORDER BY f."SYMBOL", priority
+            """)
+        else:
+            # For KITE: Direct match on tradingsymbol
+            query = text(f"""
+                SELECT DISTINCT 
+                    f."SYMBOL" as tradingsymbol,
+                    i.instrument_token
+                FROM fundamental f
+                JOIN {instruments_table} i ON f."SYMBOL" = i.tradingsymbol
+                ORDER BY f."SYMBOL"
+            """)
         
         with db_handler.engine.connect() as conn:
             result = conn.execute(query)
-            symbol_to_token = {row[0]: row[1] for row in result}
+            rows = result.fetchall()
+            
+            # For KOTAK, we need to deduplicate (keep first match per symbol)
+            if broker_name in ['kotak', 'kotak_neo']:
+                symbol_to_token = {}
+                for row in rows:
+                    symbol = row[0]
+                    token = row[1]
+                    # Only add if not already added (keeps first/priority match)
+                    if symbol not in symbol_to_token:
+                        symbol_to_token[symbol] = token
+            else:
+                symbol_to_token = {row[0]: row[1] for row in rows}
         
         log_message(f"Loaded {len(symbol_to_token)} symbols with instrument tokens from {instruments_table}", "INFO")
         return symbol_to_token
         
     except Exception as e:
         log_message(f"Error loading instruments from database: {e}", "ERROR")
+        import traceback
+        log_message(f"Traceback: {traceback.format_exc()}", "DEBUG")
         return {}
 
 
@@ -315,17 +354,9 @@ def main():
         elif broker_name in ['kotak', 'kotak_neo']:
             from brokers.kotak_neo_broker import KotakNeoBroker
             broker = KotakNeoBroker(broker_config, logger=log_message)
-        else:
-            log_message(f"Unsupported broker: {broker_name}", "ERROR")
-            return 1
-        log_message(f"Initializing {broker_name.upper()} broker...", "INFO")
-        
-        if broker_name == 'kite':
-            from brokers.kite_broker import KiteBroker
-            broker = KiteBroker(broker_config, logger=log_message)
-        elif broker_name in ['kotak', 'kotak_neo']:
-            from brokers.kotak_neo_broker import KotakNeoBroker
-            broker = KotakNeoBroker(broker_config, logger=log_message)
+            # Attach database handler for instrument lookups
+            broker.db = db_handler
+            log_message("Attached database handler to KOTAK broker for fast instrument lookups", "INFO")
         else:
             log_message(f"Unsupported broker: {broker_name}", "ERROR")
             return 1
@@ -357,7 +388,7 @@ def main():
                 symbol_to_token = broker.load_instruments(symbols)
         elif args.symbols_from_db:
             log_message("Loading symbols and instrument tokens from database...", "INFO")
-            db_symbol_to_token = load_instruments_from_database(db_handler)
+            db_symbol_to_token = load_instruments_from_database(db_handler, broker_name)
             symbols = list(db_symbol_to_token.keys())
             
             # For KOTAK broker, we need to reload instruments using its own method

@@ -876,7 +876,13 @@ class KotakNeoBroker(BaseBroker):
         
         From the CSV structure:
         - pSymbol: Numeric exchange token (e.g., '2885')
-        - pTrdSymbol: Trading symbol name (e.g., 'RELIANCE')
+        - pTrdSymbol: Trading symbol name (e.g., 'RELIANCE-EQ')
+        
+        Symbol variants (in priority order):
+        1. Base symbol without suffix (e.g., 'RELIANCE')
+        2. With -EQ suffix for NSE equity (e.g., 'RELIANCE-EQ') - preferred
+        3. With -BL suffix for NSE bulk (e.g., 'RELIANCE-BL')
+        4. Any other variant
         
         Args:
             symbol: Base symbol (e.g., 'RELIANCE')
@@ -888,31 +894,86 @@ class KotakNeoBroker(BaseBroker):
         if self.db:
             try:
                 from sqlalchemy import text
-                with self.db.engine.connect() as conn:
-                    # Match by trading_symbol
-                    result = conn.execute(text("""
-                        SELECT psymbol 
-                        FROM kotak_instruments 
-                        WHERE trading_symbol = :symbol 
-                        AND exchange_segment = 'nse_cm'
-                        LIMIT 1
-                    """), {'symbol': symbol})
-                    row = result.fetchone()
-                    if row and row[0]:
-                        return str(row[0])
+                
+                # Check if engine is valid
+                if not hasattr(self.db, 'engine') or self.db.engine is None:
+                    self.logger(f"Database engine not initialized for {symbol}", "WARNING")
+                else:
+                    with self.db.engine.connect() as conn:
+                        # Priority 1: Exact match
+                        result = conn.execute(text("""
+                            SELECT psymbol 
+                            FROM kotak_instruments 
+                            WHERE trading_symbol = :symbol 
+                            AND exchange_segment = 'nse_cm'
+                            LIMIT 1
+                        """), {'symbol': symbol})
+                        row = result.fetchone()
+                        if row and row[0]:
+                            self.logger(f"Found token '{row[0]}' for symbol '{symbol}' (exact match)", "DEBUG")
+                            return str(row[0])
+                        
+                        # Priority 2: With -EQ suffix (preferred for equity traders)
+                        symbol_with_eq = f"{symbol}-EQ"
+                        result = conn.execute(text("""
+                            SELECT psymbol 
+                            FROM kotak_instruments 
+                            WHERE trading_symbol = :symbol 
+                            AND exchange_segment = 'nse_cm'
+                            LIMIT 1
+                        """), {'symbol': symbol_with_eq})
+                        row = result.fetchone()
+                        if row and row[0]:
+                            self.logger(f"Found token '{row[0]}' for symbol '{symbol}' (with -EQ suffix)", "DEBUG")
+                            return str(row[0])
+                        
+                        # Priority 3: With -BL suffix (bulk segment)
+                        symbol_with_bl = f"{symbol}-BL"
+                        result = conn.execute(text("""
+                            SELECT psymbol 
+                            FROM kotak_instruments 
+                            WHERE trading_symbol = :symbol 
+                            AND exchange_segment = 'nse_cm'
+                            LIMIT 1
+                        """), {'symbol': symbol_with_bl})
+                        row = result.fetchone()
+                        if row and row[0]:
+                            self.logger(f"Found token '{row[0]}' for symbol '{symbol}' (with -BL suffix)", "DEBUG")
+                            return str(row[0])
+                        
+                        # Priority 4: Any variant starting with the symbol
+                        pattern = f"{symbol}%"
+                        result = conn.execute(text("""
+                            SELECT psymbol 
+                            FROM kotak_instruments 
+                            WHERE trading_symbol LIKE :pattern
+                            AND exchange_segment = 'nse_cm'
+                            LIMIT 1
+                        """), {'pattern': pattern})
+                        row = result.fetchone()
+                        if row and row[0]:
+                            self.logger(f"Found token '{row[0]}' for symbol '{symbol}' (pattern match)", "DEBUG")
+                            return str(row[0])
+                        
+                        self.logger(f"No token found in database for symbol '{symbol}'", "WARNING")
             except Exception as e:
-                self.logger(f"Database lookup failed for {symbol}: {e}", "DEBUG")
+                self.logger(f"Database lookup failed for {symbol}: {type(e).__name__}: {e}", "WARNING")
+                import traceback
+                self.logger(f"Traceback: {traceback.format_exc()}", "DEBUG")
+        else:
+            self.logger(f"No database handler available for {symbol}", "DEBUG")
         
         # Fallback to in-memory instrument master
         if hasattr(self, '_instrument_master') and self._instrument_master:
             for inst in self._instrument_master:
-                # pTrdSymbol contains the trading name like 'RELIANCE'
+                # pTrdSymbol contains the trading name like 'RELIANCE' or 'RELIANCE-EQ'
                 trading_symbol = inst.get('pTrdSymbol')
                 
                 if trading_symbol and symbol.upper() == trading_symbol.upper():
                     # pSymbol contains the numeric exchange token
                     token = inst.get('pSymbol')
                     if token:
+                        self.logger(f"Found token '{token}' for symbol '{symbol}' (from instrument master)", "DEBUG")
                         return str(token)
         
         return None

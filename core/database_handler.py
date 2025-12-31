@@ -329,6 +329,114 @@ class DatabaseHandler:
             self.logger(f"Traceback: {traceback.format_exc()}", "ERROR")
             return results
     
+    def get_latest_candle_timestamp(self, table_name: str = 'live_candles_5min', symbol: Optional[str] = None) -> Optional[datetime]:
+        """
+        Get the timestamp of the most recent candle in a table.
+        
+        Args:
+            table_name: Table to query
+            symbol: Optional symbol filter (if None, checks across all symbols)
+        
+        Returns:
+            Latest candle timestamp or None if no data
+        """
+        try:
+            with self.engine.connect() as conn:
+                if symbol:
+                    query = text(f"""
+                        SELECT MAX(datetime) as latest_timestamp
+                        FROM {table_name}
+                        WHERE tradingsymbol = :symbol
+                    """)
+                    result = conn.execute(query, {"symbol": symbol})
+                else:
+                    query = text(f"""
+                        SELECT MAX(datetime) as latest_timestamp
+                        FROM {table_name}
+                    """)
+                    result = conn.execute(query)
+                
+                row = result.fetchone()
+                if row and row[0]:
+                    return row[0]
+                return None
+        except Exception as e:
+            self.logger(f"Error getting latest candle timestamp: {e}", "ERROR")
+            return None
+    
+    def get_data_age_minutes(self, table_name: str = 'live_candles_5min', symbol: Optional[str] = None) -> Optional[float]:
+        """
+        Get the age in minutes of the most recent candle.
+        
+        Args:
+            table_name: Table to query
+            symbol: Optional symbol filter
+        
+        Returns:
+            Age in minutes or None if no data
+        """
+        latest_timestamp = self.get_latest_candle_timestamp(table_name, symbol)
+        if latest_timestamp:
+            # Ensure timezone awareness
+            import pytz
+            IST = pytz.timezone('Asia/Kolkata')
+            now = datetime.now(IST)
+            
+            # Make latest_timestamp timezone-aware if needed
+            if latest_timestamp.tzinfo is None:
+                latest_timestamp = IST.localize(latest_timestamp)
+            else:
+                latest_timestamp = latest_timestamp.astimezone(IST)
+            
+            age_seconds = (now - latest_timestamp).total_seconds()
+            return age_seconds / 60
+        return None
+    
+    def check_data_health(self, table_name: str = 'live_candles_5min', max_age_minutes: float = 10) -> Dict[str, Any]:
+        """
+        Check health of live data feed.
+        
+        Args:
+            table_name: Table to check
+            max_age_minutes: Maximum acceptable age in minutes
+        
+        Returns:
+            Dictionary with health status
+        """
+        health = {
+            'healthy': False,
+            'latest_timestamp': None,
+            'age_minutes': None,
+            'message': ''
+        }
+        
+        try:
+            latest_timestamp = self.get_latest_candle_timestamp(table_name)
+            if not latest_timestamp:
+                health['message'] = f"No data found in {table_name}"
+                self.logger(f"[HEALTH CHECK] {health['message']}", "WARNING")
+                return health
+            
+            age_minutes = self.get_data_age_minutes(table_name)
+            health['latest_timestamp'] = latest_timestamp
+            health['age_minutes'] = age_minutes
+            
+            if age_minutes is not None and age_minutes > max_age_minutes:
+                health['healthy'] = False
+                health['message'] = f"Data is stale: {age_minutes:.1f} minutes old (threshold: {max_age_minutes} min)"
+                self.logger(f"[HEALTH CHECK] {health['message']}", "WARNING")
+            else:
+                health['healthy'] = True
+                health['message'] = f"Data is healthy: {age_minutes:.1f} minutes old"
+                self.logger(f"[HEALTH CHECK] {health['message']}", "INFO")
+            
+            return health
+            
+        except Exception as e:
+            health['message'] = f"Health check failed: {e}"
+            self.logger(f"[HEALTH CHECK] {health['message']}", "ERROR")
+            return health
+    
     def close(self):
         """Close database connection."""
         try:

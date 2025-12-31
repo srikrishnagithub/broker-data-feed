@@ -68,10 +68,10 @@ def create_kotak_instruments_table(db_handler: DatabaseHandler):
                     conn.execute(text(statement))
             conn.commit()
         
-        print("✅ Table created successfully")
+        print("[OK] Table created successfully")
         return True
     except Exception as e:
-        print(f"❌ Error creating table: {e}")
+        print(f"[ERROR] Error creating table: {e}")
         return False
 
 
@@ -91,7 +91,7 @@ def download_and_store_instruments():
         broker_config = config.get_broker_config('kotak')
         db_handler = DatabaseHandler(logger=lambda msg, level: print(f"[{level}] {msg}"))
         
-        print("✅ Configuration loaded")
+        print("[OK] Configuration loaded")
         
         # Create table
         print("\n2. Setting up database table...")
@@ -105,23 +105,23 @@ def download_and_store_instruments():
         # Authenticate
         print("\n4. Authenticating with KOTAK NEO...")
         if not broker.connect():
-            print("❌ Authentication failed")
+            print("[ERROR] Authentication failed")
             return False
         
-        print("✅ Authentication successful")
+        print("[OK] Authentication successful")
         
         # Fetch instrument master
         print("\n5. Downloading instrument master...")
         if not broker.fetch_instrument_master():
-            print("❌ Failed to download instrument master")
+            print("[ERROR] Failed to download instrument master")
             return False
         
         if not hasattr(broker, '_instrument_master') or not broker._instrument_master:
-            print("❌ No instrument data received")
+            print("[ERROR] No instrument data received")
             return False
         
         instruments = broker._instrument_master
-        print(f"✅ Downloaded {len(instruments)} instruments")
+        print(f"[OK] Downloaded {len(instruments)} instruments")
         
         # Clear existing data
         print("\n6. Clearing old data...")
@@ -129,9 +129,9 @@ def download_and_store_instruments():
             with db_handler.engine.connect() as conn:
                 conn.execute(text("DELETE FROM kotak_instruments"))
                 conn.commit()
-            print("✅ Old data cleared")
+            print("[OK] Old data cleared")
         except Exception as e:
-            print(f"❌ Error clearing old data: {e}")
+            print(f"[ERROR] Error clearing old data: {e}")
             return False
         
         # Insert instruments into database
@@ -147,18 +147,20 @@ def download_and_store_instruments():
             try:
                 with db_handler.engine.connect() as conn:
                     for inst in batch:
-                        # Extract fields (field names may vary)
-                        exchange = inst.get('exchange') or inst.get('exch') or ''
-                        exchange_segment = inst.get('exchange_segment') or inst.get('exch_seg') or ''
-                        token = inst.get('token') or inst.get('instrument_token') or ''
-                        trading_symbol = inst.get('tradingsymbol') or inst.get('symbol') or ''
-                        name = inst.get('name') or inst.get('company_name') or ''
-                        instrument_type = inst.get('instrument_type') or inst.get('inst_type') or ''
-                        psymbol = inst.get('pSymbol') or inst.get('psymbol') or trading_symbol
-                        expiry = inst.get('expiry') or None
-                        strike = inst.get('strike') or 0
-                        lot_size = inst.get('lot_size') or inst.get('lotsize') or 1
-                        tick_size = inst.get('tick_size') or inst.get('ticksize') or 0.05
+                        # Extract fields from KOTAK CSV structure
+                        # Token is the exchange token (numeric ID) used for API calls
+                        # Trading symbol is the symbol name used for lookup (e.g., 'RELIANCE')
+                        exchange = inst.get('pExchange') or ''
+                        exchange_segment = inst.get('pExchSeg') or ''
+                        token = inst.get('pSymbol') or ''  # Exchange token (numeric) - REQUIRED for API quotes
+                        trading_symbol = inst.get('pTrdSymbol') or ''  # Trading symbol like 'RELIANCE' - for lookup
+                        name = inst.get('pDesc') or inst.get('pSymbolName') or ''
+                        instrument_type = inst.get('pInstType') or ''
+                        psymbol = inst.get('pSymbol') or ''  # Same as token, stored for reference
+                        expiry = inst.get('pExpiryDate') or None
+                        strike = inst.get('dStrikePrice;') or 0
+                        lot_size = inst.get('lLotSize') or inst.get('iLotSize') or 1
+                        tick_size = inst.get('dTickSize ') or 0.05
                         
                         insert_sql = """
                         INSERT INTO kotak_instruments 
@@ -197,10 +199,10 @@ def download_and_store_instruments():
         print("\n" + "=" * 70)
         print("SUMMARY")
         print("=" * 70)
-        print(f"✅ Total instruments downloaded: {len(instruments)}")
-        print(f"✅ Successfully inserted: {inserted}")
+        print(f"[OK] Total instruments downloaded: {len(instruments)}")
+        print(f"[OK] Successfully inserted: {inserted}")
         if failed > 0:
-            print(f"❌ Failed: {failed}")
+            print(f"[WARN] Failed: {failed}")
         print()
         print("You can now query instruments with:")
         print("  SELECT * FROM kotak_instruments WHERE trading_symbol = 'RELIANCE';")
@@ -210,7 +212,7 @@ def download_and_store_instruments():
         return True
         
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\n[ERROR] Error: {e}")
         import traceback
         traceback.print_exc()
         return False
