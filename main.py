@@ -153,12 +153,13 @@ def check_required_tables(db_handler: DatabaseHandler) -> bool:
     return True
 
 
-def load_instruments_from_database(db_handler: DatabaseHandler) -> dict:
+def load_instruments_from_database(db_handler: DatabaseHandler, broker_name: str = 'kite') -> dict:
     """
-    Load instruments from database - symbols from Fundamental table with tokens from instruments table.
+    Load instruments from database - symbols from Fundamental table with tokens from broker-specific instruments table.
     
     Args:
         db_handler: Database handler instance
+        broker_name: Name of the broker ('kite' or 'kotak')
         
     Returns:
         Dictionary mapping symbols to instrument tokens
@@ -166,12 +167,15 @@ def load_instruments_from_database(db_handler: DatabaseHandler) -> dict:
     try:
         from sqlalchemy import text
         
-        query = text("""
+        # Determine the instruments table based on broker
+        instruments_table = 'kotak_instruments' if broker_name in ['kotak', 'kotak_neo'] else 'instruments'
+        
+        query = text(f"""
             SELECT DISTINCT 
                 f."SYMBOL" as tradingsymbol,
                 i.instrument_token
             FROM fundamental f
-            JOIN instruments i ON f."SYMBOL" = i.tradingsymbol
+            JOIN {instruments_table} i ON f."SYMBOL" = i.tradingsymbol
             ORDER BY f."SYMBOL"
         """)
         
@@ -179,7 +183,7 @@ def load_instruments_from_database(db_handler: DatabaseHandler) -> dict:
             result = conn.execute(query)
             symbol_to_token = {row[0]: row[1] for row in result}
         
-        log_message(f"Loaded {len(symbol_to_token)} symbols with instrument tokens from database", "INFO")
+        log_message(f"Loaded {len(symbol_to_token)} symbols with instrument tokens from {instruments_table}", "INFO")
         return symbol_to_token
         
     except Exception as e:
@@ -226,6 +230,9 @@ Optional environment variables:
                        help='File containing symbols (one per line)')
     parser.add_argument('--symbols-from-db', action='store_true',
                        help='Load symbols from database')
+    parser.add_argument('--broker', default='kite',
+                       choices=['kite', 'kotak', 'kotak_neo'],
+                       help='Broker to use (default: kite)')
     parser.add_argument('--test-broker', action='store_true',
                        help='Test broker connection and exit')
     parser.add_argument('--test-database', action='store_true',
@@ -244,11 +251,19 @@ def main():
         # Parse arguments
         args = parse_arguments()
         
+        # Determine broker
+        broker_name = args.broker.lower()
+        
+        # Determine broker
+        broker_name = args.broker.lower()
+        
         # Load configuration
         config = Config(args.config_file)
         
-        # Validate configuration
-        errors = config.validate()
+        # Validate configuration for selected broker
+        errors = config.validate(broker_name)
+        # Validate configuration for selected broker
+        errors = config.validate(broker_name)
         if errors:
             log_message("Configuration validation failed:", "ERROR")
             for error in errors:
@@ -257,7 +272,8 @@ def main():
         
         # Get configurations
         db_config = config.get_database_config()
-        broker_config = config.get_broker_config('kite')
+        broker_config = config.get_broker_config(broker_name)
+        broker_config = config.get_broker_config(broker_name)
         service_config = config.get_service_config()
         
         # Initialize database handler
@@ -291,8 +307,28 @@ def main():
                 return 1
         
         # Initialize broker
-        log_message("Initializing Kite broker...", "INFO")
-        broker = KiteBroker(broker_config, logger=log_message)
+        log_message(f"Initializing {broker_name.upper()} broker...", "INFO")
+        
+        if broker_name == 'kite':
+            from brokers.kite_broker import KiteBroker
+            broker = KiteBroker(broker_config, logger=log_message)
+        elif broker_name in ['kotak', 'kotak_neo']:
+            from brokers.kotak_neo_broker import KotakNeoBroker
+            broker = KotakNeoBroker(broker_config, logger=log_message)
+        else:
+            log_message(f"Unsupported broker: {broker_name}", "ERROR")
+            return 1
+        log_message(f"Initializing {broker_name.upper()} broker...", "INFO")
+        
+        if broker_name == 'kite':
+            from brokers.kite_broker import KiteBroker
+            broker = KiteBroker(broker_config, logger=log_message)
+        elif broker_name in ['kotak', 'kotak_neo']:
+            from brokers.kotak_neo_broker import KotakNeoBroker
+            broker = KotakNeoBroker(broker_config, logger=log_message)
+        else:
+            log_message(f"Unsupported broker: {broker_name}", "ERROR")
+            return 1
         
         # Test broker if requested
         if args.test_broker:
@@ -321,13 +357,20 @@ def main():
                 symbol_to_token = broker.load_instruments(symbols)
         elif args.symbols_from_db:
             log_message("Loading symbols and instrument tokens from database...", "INFO")
-            symbol_to_token = load_instruments_from_database(db_handler)
-            symbols = list(symbol_to_token.keys())
+            db_symbol_to_token = load_instruments_from_database(db_handler)
+            symbols = list(db_symbol_to_token.keys())
             
-            # Populate broker's internal mapping
-            if symbol_to_token:
-                broker._token_to_symbol = {token: symbol for symbol, token in symbol_to_token.items()}
-                log_message("Populated broker's token-to-symbol mapping", "INFO")
+            # For KOTAK broker, we need to reload instruments using its own method
+            # For KITE broker, we can use the database tokens directly
+            if broker_name == 'kotak':
+                log_message(f"KOTAK broker: Loading {len(symbols)} instruments from instrument master...", "INFO")
+                symbol_to_token = broker.load_instruments(symbols)
+            else:
+                symbol_to_token = db_symbol_to_token
+                # Populate broker's internal mapping
+                if symbol_to_token:
+                    broker._token_to_symbol = {token: symbol for symbol, token in symbol_to_token.items()}
+                    log_message("Populated broker's token-to-symbol mapping", "INFO")
         else:
             log_message("No symbols specified. Use --symbols, --symbols-file, or --symbols-from-db", "ERROR")
             return 1

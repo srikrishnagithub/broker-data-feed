@@ -220,7 +220,7 @@ class DataFeedService:
                 
                 self.logger(
                     f"[HEARTBEAT] Ticks: {stats['tick_count']}, "
-                    f"Candles: {stats['candle_count']}"
+                    f"Candles saved: {stats['candle_count']}"
                     f"{time_since_tick} ({market_status})",
                     "INFO"
                 )
@@ -246,6 +246,53 @@ class DataFeedService:
                 self.logger(f"Error in heartbeat loop: {e}", "ERROR")
         
         self.logger("Heartbeat stopped", "INFO")
+    
+    def _polling_loop(self):
+        """
+        Polling loop for REST API brokers (e.g., KOTAK NEO).
+        Polls quotes every 30 seconds synchronized to clock (at :05 and :35 seconds).
+        """
+        self.logger("REST API polling loop started", "INFO")
+        
+        poll_interval = 30  # Poll every 30 seconds
+        offset_seconds = 5  # Poll at :05 and :35 seconds
+        
+        while not self.shutdown_event.is_set():
+            try:
+                # Calculate time to next poll interval aligned to clock
+                now = datetime.now()
+                current_second = now.second
+                current_microsecond = now.microsecond
+                
+                # Find next poll time (either :05 or :35 seconds)
+                if current_second < offset_seconds:
+                    # Wait until :05 seconds
+                    wait_seconds = offset_seconds - current_second - (current_microsecond / 1000000.0)
+                elif current_second < offset_seconds + poll_interval:
+                    # Wait until :35 seconds
+                    wait_seconds = (offset_seconds + poll_interval) - current_second - (current_microsecond / 1000000.0)
+                else:
+                    # Wait until next minute :05 seconds
+                    wait_seconds = (60 - current_second) + offset_seconds - (current_microsecond / 1000000.0)
+                
+                # Ensure we don't wait negative time
+                if wait_seconds < 0:
+                    wait_seconds = 0
+                
+                # Wait until next poll time
+                if self.shutdown_event.wait(wait_seconds):
+                    break  # Shutdown requested
+                
+                # Poll quotes from broker
+                if hasattr(self.broker, 'poll_quotes'):
+                    self.broker.poll_quotes()
+                
+            except Exception as e:
+                self.logger(f"Error in polling loop: {e}", "ERROR")
+                # Wait a bit before retrying
+                self.shutdown_event.wait(5)
+        
+        self.logger("REST API polling stopped", "INFO")
     
     def start(self, instruments: List[int], symbols: List[str]):
         """
@@ -293,6 +340,16 @@ class DataFeedService:
                 name="heartbeat"
             )
             self._heartbeat_thread.start()
+            
+            # Check if broker needs polling (REST API mode)
+            if hasattr(self.broker, 'poll_quotes'):
+                self.logger("Starting REST API polling thread...", "INFO")
+                self._polling_thread = threading.Thread(
+                    target=self._polling_loop,
+                    daemon=True,
+                    name="rest_api_polling"
+                )
+                self._polling_thread.start()
             
             # Log market status
             market_status = "market hours" if self._is_market_hours() else "off-market hours"
