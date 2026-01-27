@@ -435,6 +435,15 @@ def main():
         signal.signal(signal.SIGTERM, signal_handler)
         
         # Aggregate existing 5-min candles into higher timeframes on startup
+        log_message("Step 1: Performing startup backfill of missing 15-min and 60-min candles...", "INFO")
+        backfill_results = db_handler.startup_backfill_all_symbols()
+        if backfill_results:
+            total_15min = sum(r['15min_backfilled'] for r in backfill_results.values())
+            total_60min = sum(r['60min_backfilled'] for r in backfill_results.values())
+            log_message(f"✓ Backfill complete: {total_15min} x 15-min, {total_60min} x 60-min candles", "SUCCESS")
+        else:
+            log_message("ℹ No missing candles to backfill", "INFO")
+        
         log_message("Aggregating existing 5-min candles into higher timeframes...", "INFO")
         intervals_to_aggregate = [i for i in service_config['candle_intervals'] if i > 5]
         if intervals_to_aggregate:

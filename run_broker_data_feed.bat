@@ -1,4 +1,4 @@
-@echo off cd /d F:\Development\root\Kite\broker-data-feed 
-call myenv\Scripts\activate.bat 
+@echo off cd /d D:\Development\broker_data_feed 
+call venv\Scripts\activate.bat 
 python main.py --symbols-from-db
 pause

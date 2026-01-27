@@ -437,6 +437,80 @@ class DatabaseHandler:
             self.logger(f"[HEALTH CHECK] {health['message']}", "ERROR")
             return health
     
+    def aggregate_5min_to_15min(self, symbol: str, limit: int = 100) -> Optional[Dict[str, Any]]:
+        """
+        Aggregate latest 5-minute candles into a 15-minute candle.
+        
+        Groups the latest 3 consecutive 5-minute candles into one 15-minute candle.
+        
+        Args:
+            symbol: Trading symbol
+            limit: Maximum number of 5-min candles to fetch (default 100)
+        
+        Returns:
+            Dictionary with aggregated 15-minute candle data, or None if insufficient data
+        """
+        try:
+            query = text("""
+                SELECT 
+                    datetime, 
+                    open, 
+                    high, 
+                    low, 
+                    close, 
+                    volume,
+                    instrument_token
+                FROM live_candles_5min
+                WHERE tradingsymbol = :symbol
+                ORDER BY datetime DESC
+                LIMIT :limit
+            """)
+            
+            with self.engine.connect() as conn:
+                result = conn.execute(query, {"symbol": symbol, "limit": limit}).fetchall()
+            
+            if not result or len(result) < 3:
+                self.logger(f"Insufficient 5-minute candles for {symbol}: {len(result) if result else 0}", "WARNING")
+                return None
+            
+            # Reverse to get chronological order (newest first, so reverse back)
+            candles = list(reversed(result))
+            
+            # Get the first 3 candles for aggregation
+            agg_candles = candles[:3]
+            
+            # Calculate 15-minute candle timestamp
+            first_datetime = agg_candles[0][0]  # datetime column
+            if isinstance(first_datetime, str):
+                from datetime import datetime as dt
+                first_datetime = dt.fromisoformat(first_datetime)
+            
+            minutes = (first_datetime.minute // 15) * 15
+            candle_15min_timestamp = first_datetime.replace(minute=minutes, second=0, microsecond=0)
+            
+            # Aggregate data
+            result_dict = {
+                'datetime': candle_15min_timestamp,
+                'symbol': symbol,
+                'instrument_token': agg_candles[0][6],  # instrument_token from first candle
+                'open': float(agg_candles[0][1]),  # open from first candle
+                'high': max(float(c[2]) for c in agg_candles),  # max high
+                'low': min(float(c[3]) for c in agg_candles),  # min low
+                'close': float(agg_candles[-1][4]),  # close from last candle
+                'volume': sum(int(c[5]) for c in agg_candles),  # sum of volumes
+                'tick_count': 3,
+                'source': 'aggregated'
+            }
+            
+            self.logger(f"Aggregated 3 x 5-min candles for {symbol} into 15-min candle at {candle_15min_timestamp}", "DEBUG")
+            return result_dict
+            
+        except Exception as e:
+            self.logger(f"Error aggregating 5-min to 15-min candles for {symbol}: {e}", "ERROR")
+            import traceback
+            self.logger(f"Traceback: {traceback.format_exc()}", "ERROR")
+            return None
+    
     def close(self):
         """Close database connection."""
         try:
@@ -444,3 +518,319 @@ class DatabaseHandler:
             self.logger("Database connection closed", "INFO")
         except Exception as e:
             self.logger(f"Error closing database connection: {e}", "WARNING")
+    
+    def backfill_missing_15min_candles(self, symbol: str) -> int:
+        """
+        Detect and backfill missing 15-minute candles from 5-minute candles.
+        
+        Checks for gaps in the 15-minute candles table and fills them using
+        available 5-minute candles.
+        
+        Args:
+            symbol: Trading symbol to backfill
+        
+        Returns:
+            Number of 15-minute candles backfilled
+        """
+        try:
+            # Get all 5-minute candles
+            query_5min = text("""
+                SELECT 
+                    datetime, 
+                    open, 
+                    high, 
+                    low, 
+                    close, 
+                    volume,
+                    instrument_token
+                FROM live_candles_5min
+                WHERE tradingsymbol = :symbol
+                ORDER BY datetime ASC
+            """)
+            
+            with self.engine.connect() as conn:
+                result_5min = conn.execute(query_5min, {"symbol": symbol}).fetchall()
+            
+            if not result_5min or len(result_5min) < 3:
+                self.logger(f"Insufficient 5-minute candles for {symbol}: {len(result_5min) if result_5min else 0}", "WARNING")
+                return 0
+            
+            # Convert to DataFrame for easier manipulation
+            df_5min = pd.DataFrame(result_5min, columns=[
+                'datetime', 'open', 'high', 'low', 'close', 'volume', 'instrument_token'
+            ])
+            df_5min['datetime'] = pd.to_datetime(df_5min['datetime'])
+            
+            # Get existing 15-minute candles
+            query_15min = text("""
+                SELECT datetime
+                FROM live_candles_15min
+                WHERE tradingsymbol = :symbol
+                ORDER BY datetime ASC
+            """)
+            
+            with self.engine.connect() as conn:
+                result_15min = conn.execute(query_15min, {"symbol": symbol}).fetchall()
+            
+            existing_15min_datetimes = set(pd.to_datetime([r[0] for r in result_15min])) if result_15min else set()
+            
+            # Generate expected 15-minute timestamps from 5-minute candles
+            backfilled_candles = []
+            i = 0
+            
+            while i + 2 < len(df_5min):
+                # Get 3 consecutive 5-minute candles
+                candle_group = df_5min.iloc[i:i+3]
+                
+                # Calculate 15-minute timestamp
+                first_datetime = candle_group.iloc[0]['datetime']
+                minutes = (first_datetime.minute // 15) * 15
+                candle_15min_ts = first_datetime.replace(minute=minutes, second=0, microsecond=0)
+                
+                # Check if this 15-minute candle already exists
+                if candle_15min_ts not in existing_15min_datetimes:
+                    # Create aggregated candle
+                    agg_candle = {
+                        'datetime': candle_15min_ts,
+                        'symbol': symbol,
+                        'instrument_token': int(candle_group.iloc[0]['instrument_token']),
+                        'open': float(candle_group.iloc[0]['open']),
+                        'high': float(candle_group['high'].max()),
+                        'low': float(candle_group['low'].min()),
+                        'close': float(candle_group.iloc[-1]['close']),
+                        'volume': int(candle_group['volume'].sum()),
+                        'tick_count': 3,
+                        'source': 'backfilled'
+                    }
+                    backfilled_candles.append(agg_candle)
+                    self.logger(f"Backfill 15-min: {symbol} at {candle_15min_ts}", "DEBUG")
+                
+                i += 3
+            
+            # Save backfilled candles
+            if backfilled_candles:
+                from core.candle_aggregator import Candle
+                
+                candle_objects = []
+                for candle_dict in backfilled_candles:
+                    candle = Candle(
+                        symbol=candle_dict['symbol'],
+                        interval=15,
+                        timestamp=candle_dict['datetime'],
+                        instrument_token=candle_dict['instrument_token']
+                    )
+                    candle.open = candle_dict['open']
+                    candle.high = candle_dict['high']
+                    candle.low = candle_dict['low']
+                    candle.close = candle_dict['close']
+                    candle.volume = candle_dict['volume']
+                    candle.tick_count = candle_dict['tick_count']
+                    candle_objects.append(candle)
+                
+                saved = self.save_candles(candle_objects, table_name='live_candles_15min', on_duplicate='update')
+                self.logger(f"Backfilled {saved} 15-minute candles for {symbol}", "INFO")
+                return saved
+            else:
+                self.logger(f"No missing 15-minute candles to backfill for {symbol}", "INFO")
+                return 0
+            
+        except Exception as e:
+            self.logger(f"Error backfilling 15-minute candles for {symbol}: {e}", "ERROR")
+            import traceback
+            self.logger(f"Traceback: {traceback.format_exc()}", "ERROR")
+            return 0
+    
+    def backfill_missing_60min_candles(self, symbol: str) -> int:
+        """
+        Detect and backfill missing 60-minute candles from 15-minute candles.
+        
+        Checks for gaps in the 60-minute candles table and fills them using
+        available 15-minute candles.
+        
+        Args:
+            symbol: Trading symbol to backfill
+        
+        Returns:
+            Number of 60-minute candles backfilled
+        """
+        try:
+            # Get all 15-minute candles
+            query_15min = text("""
+                SELECT 
+                    datetime, 
+                    open, 
+                    high, 
+                    low, 
+                    close, 
+                    volume,
+                    instrument_token
+                FROM live_candles_15min
+                WHERE tradingsymbol = :symbol
+                ORDER BY datetime ASC
+            """)
+            
+            with self.engine.connect() as conn:
+                result_15min = conn.execute(query_15min, {"symbol": symbol}).fetchall()
+            
+            if not result_15min or len(result_15min) < 4:
+                self.logger(f"Insufficient 15-minute candles for {symbol}: {len(result_15min) if result_15min else 0}", "WARNING")
+                return 0
+            
+            # Convert to DataFrame
+            df_15min = pd.DataFrame(result_15min, columns=[
+                'datetime', 'open', 'high', 'low', 'close', 'volume', 'instrument_token'
+            ])
+            df_15min['datetime'] = pd.to_datetime(df_15min['datetime'])
+            
+            # Get existing 60-minute candles
+            query_60min = text("""
+                SELECT datetime
+                FROM live_candles_60min
+                WHERE tradingsymbol = :symbol
+                ORDER BY datetime ASC
+            """)
+            
+            with self.engine.connect() as conn:
+                result_60min = conn.execute(query_60min, {"symbol": symbol}).fetchall()
+            
+            existing_60min_datetimes = set(pd.to_datetime([r[0] for r in result_60min])) if result_60min else set()
+            
+            # Generate expected 60-minute timestamps from 15-minute candles
+            backfilled_candles = []
+            i = 0
+            
+            while i + 3 < len(df_15min):
+                # Get 4 consecutive 15-minute candles (4 * 15 = 60 minutes)
+                candle_group = df_15min.iloc[i:i+4]
+                
+                # Calculate 60-minute timestamp
+                first_datetime = candle_group.iloc[0]['datetime']
+                hour = first_datetime.hour
+                candle_60min_ts = first_datetime.replace(minute=0, second=0, microsecond=0)
+                
+                # Check if this 60-minute candle already exists
+                if candle_60min_ts not in existing_60min_datetimes:
+                    # Create aggregated candle
+                    agg_candle = {
+                        'datetime': candle_60min_ts,
+                        'symbol': symbol,
+                        'instrument_token': int(candle_group.iloc[0]['instrument_token']),
+                        'open': float(candle_group.iloc[0]['open']),
+                        'high': float(candle_group['high'].max()),
+                        'low': float(candle_group['low'].min()),
+                        'close': float(candle_group.iloc[-1]['close']),
+                        'volume': int(candle_group['volume'].sum()),
+                        'tick_count': 4,
+                        'source': 'backfilled'
+                    }
+                    backfilled_candles.append(agg_candle)
+                    self.logger(f"Backfill 60-min: {symbol} at {candle_60min_ts}", "DEBUG")
+                
+                i += 4
+            
+            # Save backfilled candles
+            if backfilled_candles:
+                from core.candle_aggregator import Candle
+                
+                candle_objects = []
+                for candle_dict in backfilled_candles:
+                    candle = Candle(
+                        symbol=candle_dict['symbol'],
+                        interval=60,
+                        timestamp=candle_dict['datetime'],
+                        instrument_token=candle_dict['instrument_token']
+                    )
+                    candle.open = candle_dict['open']
+                    candle.high = candle_dict['high']
+                    candle.low = candle_dict['low']
+                    candle.close = candle_dict['close']
+                    candle.volume = candle_dict['volume']
+                    candle.tick_count = candle_dict['tick_count']
+                    candle_objects.append(candle)
+                
+                saved = self.save_candles(candle_objects, table_name='live_candles_60min', on_duplicate='update')
+                self.logger(f"Backfilled {saved} 60-minute candles for {symbol}", "INFO")
+                return saved
+            else:
+                self.logger(f"No missing 60-minute candles to backfill for {symbol}", "INFO")
+                return 0
+            
+        except Exception as e:
+            self.logger(f"Error backfilling 60-minute candles for {symbol}: {e}", "ERROR")
+            import traceback
+            self.logger(f"Traceback: {traceback.format_exc()}", "ERROR")
+            return 0
+    
+    def startup_backfill_all_symbols(self) -> Dict[str, Dict[str, int]]:
+        """
+        Run backfill for all symbols on startup.
+        
+        Checks all symbols in live_candles_5min and backfills any missing
+        15-minute and 60-minute candles.
+        
+        Returns:
+            Dictionary with backfill results:
+            {
+                'symbol_name': {
+                    '15min_backfilled': int,
+                    '60min_backfilled': int
+                },
+                ...
+            }
+        """
+        try:
+            # Get all symbols from 5-minute table
+            query = text("""
+                SELECT DISTINCT tradingsymbol
+                FROM live_candles_5min
+                ORDER BY tradingsymbol
+            """)
+            
+            with self.engine.connect() as conn:
+                result = conn.execute(query)
+                symbols = [row[0] for row in result]
+            
+            if not symbols:
+                self.logger("No symbols found for backfill", "WARNING")
+                return {}
+            
+            self.logger(f"Starting backfill for {len(symbols)} symbols", "INFO")
+            
+            results = {}
+            for symbol in symbols:
+                self.logger(f"\nBackfilling {symbol}...", "INFO")
+                
+                # Backfill 15-minute candles
+                backfilled_15min = self.backfill_missing_15min_candles(symbol)
+                
+                # Backfill 60-minute candles (depends on 15-min being complete)
+                backfilled_60min = self.backfill_missing_60min_candles(symbol)
+                
+                results[symbol] = {
+                    '15min_backfilled': backfilled_15min,
+                    '60min_backfilled': backfilled_60min
+                }
+            
+            # Print summary
+            self.logger("\n" + "="*80, "INFO")
+            self.logger("BACKFILL SUMMARY", "INFO")
+            self.logger("="*80, "INFO")
+            
+            total_15min = 0
+            total_60min = 0
+            
+            for symbol, counts in results.items():
+                self.logger(f"{symbol}: 15-min={counts['15min_backfilled']}, 60-min={counts['60min_backfilled']}", "INFO")
+                total_15min += counts['15min_backfilled']
+                total_60min += counts['60min_backfilled']
+            
+            self.logger(f"\nTOTAL: 15-min={total_15min}, 60-min={total_60min}", "INFO")
+            self.logger("="*80, "INFO")
+            
+            return results
+            
+        except Exception as e:
+            self.logger(f"Error in startup backfill: {e}", "ERROR")
+            import traceback
+            self.logger(f"Traceback: {traceback.format_exc()}", "ERROR")
+            return {}

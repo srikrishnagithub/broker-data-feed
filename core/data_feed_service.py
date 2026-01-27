@@ -164,6 +164,9 @@ class DataFeedService:
                     self.logger(f"Saved {saved_count} candles to {table_name}", "DEBUG")
                     with self._stats_lock:
                         self.candle_count += saved_count
+                
+                # Real-time aggregation: 5-min -> 15-min -> 60-min
+                self._aggregate_candles_realtime(valid_candles)
             else:
                 self.logger(f"No valid candles to save", "DEBUG")
 
@@ -171,6 +174,219 @@ class DataFeedService:
             self.logger(f"Error saving candles: {e}", "ERROR")
             import traceback
             self.logger(f"Traceback: {traceback.format_exc()}", "ERROR")
+    
+    def _aggregate_candles_realtime(self, completed_candles: List[Candle]):
+        """
+        Aggregate completed candles into higher timeframes in real-time.
+        
+        When 5-minute candles complete, check if we can form 15-minute candles.
+        When 15-minute candles complete, check if we can form 60-minute candles.
+        
+        Args:
+            completed_candles: List of completed candles
+        """
+        try:
+            # Extract 5-minute candles
+            candles_5min = [c for c in completed_candles if c.interval == 5]
+            
+            if not candles_5min:
+                return
+            
+            # Aggregate 5-min to 15-min
+            self._try_create_15min_candles(candles_5min)
+            
+            # Aggregate 15-min to 60-min (if 15-min candles were just completed)
+            candles_15min = [c for c in completed_candles if c.interval == 15]
+            if candles_15min:
+                self._try_create_60min_candles(candles_15min)
+        
+        except Exception as e:
+            self.logger(f"Error in real-time aggregation: {e}", "ERROR")
+            import traceback
+            self.logger(f"Traceback: {traceback.format_exc()}", "ERROR")
+    
+    def _try_create_15min_candles(self, candles_5min: List[Candle]):
+        """
+        Try to create 15-minute candles from completed 5-minute candles.
+        
+        For each symbol in the completed 5-min candles, check if we now have
+        3 consecutive 5-min candles that can form a 15-min candle.
+        
+        Args:
+            candles_5min: List of completed 5-minute candles
+        """
+        try:
+            # Group by symbol
+            symbols_to_check = set(c.symbol for c in candles_5min)
+            
+            for symbol in symbols_to_check:
+                try:
+                    # Get last 6 5-minute candles for this symbol
+                    import pandas as pd
+                    from sqlalchemy import text
+                    
+                    query = text("""
+                        SELECT 
+                            datetime, open, high, low, close, volume, instrument_token
+                        FROM live_candles_5min
+                        WHERE tradingsymbol = :symbol
+                        ORDER BY datetime DESC
+                        LIMIT 6
+                    """)
+                    
+                    with self.database.engine.connect() as conn:
+                        result = conn.execute(query, {"symbol": symbol}).fetchall()
+                    
+                    if not result or len(result) < 3:
+                        continue
+                    
+                    # Reverse to get chronological order
+                    candles = list(reversed(result))
+                    
+                    # Get existing 15-min candles for this symbol
+                    query_15min = text("""
+                        SELECT datetime
+                        FROM live_candles_15min
+                        WHERE tradingsymbol = :symbol
+                        ORDER BY datetime DESC
+                        LIMIT 6
+                    """)
+                    
+                    with self.database.engine.connect() as conn:
+                        result_15min = conn.execute(query_15min, {"symbol": symbol}).fetchall()
+                    
+                    existing_15min_datetimes = set(pd.to_datetime([r[0] for r in result_15min])) if result_15min else set()
+                    
+                    # Try to form 15-minute candles from groups of 3 consecutive 5-min candles
+                    for i in range(len(candles) - 2):
+                        group = candles[i:i+3]
+                        
+                        # Calculate expected 15-min timestamp
+                        first_datetime = pd.to_datetime(group[0][0])
+                        minutes = (first_datetime.minute // 15) * 15
+                        ts_15min = first_datetime.replace(minute=minutes, second=0, microsecond=0)
+                        
+                        # Check if this 15-min candle already exists
+                        if ts_15min in existing_15min_datetimes:
+                            continue
+                        
+                        # Create aggregated 15-min candle
+                        agg_candle = Candle(
+                            symbol=symbol,
+                            interval=15,
+                            timestamp=ts_15min,
+                            instrument_token=int(group[0][6])
+                        )
+                        agg_candle.open = float(group[0][1])
+                        agg_candle.high = max(float(c[2]) for c in group)
+                        agg_candle.low = min(float(c[3]) for c in group)
+                        agg_candle.close = float(group[-1][4])
+                        agg_candle.volume = sum(int(c[5]) for c in group)
+                        agg_candle.tick_count = 3
+                        
+                        # Save the aggregated candle
+                        saved = self.database.save_candles([agg_candle], 'live_candles_15min', on_duplicate='update')
+                        if saved > 0:
+                            self.logger(f"[REAL-TIME] Created 15-min candle for {symbol} at {ts_15min}", "INFO")
+                            with self._stats_lock:
+                                self.candle_count += saved
+                
+                except Exception as e:
+                    self.logger(f"Error creating 15-min candles for {symbol}: {e}", "DEBUG")
+        
+        except Exception as e:
+            self.logger(f"Error in _try_create_15min_candles: {e}", "ERROR")
+    
+    def _try_create_60min_candles(self, candles_15min: List[Candle]):
+        """
+        Try to create 60-minute candles from completed 15-minute candles.
+        
+        For each symbol in the completed 15-min candles, check if we now have
+        4 consecutive 15-min candles that can form a 60-min candle.
+        
+        Args:
+            candles_15min: List of completed 15-minute candles
+        """
+        try:
+            # Group by symbol
+            symbols_to_check = set(c.symbol for c in candles_15min)
+            
+            for symbol in symbols_to_check:
+                try:
+                    # Get last 8 15-minute candles for this symbol
+                    import pandas as pd
+                    from sqlalchemy import text
+                    
+                    query = text("""
+                        SELECT 
+                            datetime, open, high, low, close, volume, instrument_token
+                        FROM live_candles_15min
+                        WHERE tradingsymbol = :symbol
+                        ORDER BY datetime DESC
+                        LIMIT 8
+                    """)
+                    
+                    with self.database.engine.connect() as conn:
+                        result = conn.execute(query, {"symbol": symbol}).fetchall()
+                    
+                    if not result or len(result) < 4:
+                        continue
+                    
+                    # Reverse to get chronological order
+                    candles = list(reversed(result))
+                    
+                    # Get existing 60-min candles for this symbol
+                    query_60min = text("""
+                        SELECT datetime
+                        FROM live_candles_60min
+                        WHERE tradingsymbol = :symbol
+                        ORDER BY datetime DESC
+                        LIMIT 6
+                    """)
+                    
+                    with self.database.engine.connect() as conn:
+                        result_60min = conn.execute(query_60min, {"symbol": symbol}).fetchall()
+                    
+                    existing_60min_datetimes = set(pd.to_datetime([r[0] for r in result_60min])) if result_60min else set()
+                    
+                    # Try to form 60-minute candles from groups of 4 consecutive 15-min candles
+                    for i in range(len(candles) - 3):
+                        group = candles[i:i+4]
+                        
+                        # Calculate expected 60-min timestamp
+                        first_datetime = pd.to_datetime(group[0][0])
+                        ts_60min = first_datetime.replace(minute=0, second=0, microsecond=0)
+                        
+                        # Check if this 60-min candle already exists
+                        if ts_60min in existing_60min_datetimes:
+                            continue
+                        
+                        # Create aggregated 60-min candle
+                        agg_candle = Candle(
+                            symbol=symbol,
+                            interval=60,
+                            timestamp=ts_60min,
+                            instrument_token=int(group[0][6])
+                        )
+                        agg_candle.open = float(group[0][1])
+                        agg_candle.high = max(float(c[2]) for c in group)
+                        agg_candle.low = min(float(c[3]) for c in group)
+                        agg_candle.close = float(group[-1][4])
+                        agg_candle.volume = sum(int(c[5]) for c in group)
+                        agg_candle.tick_count = 4
+                        
+                        # Save the aggregated candle
+                        saved = self.database.save_candles([agg_candle], 'live_candles_60min', on_duplicate='update')
+                        if saved > 0:
+                            self.logger(f"[REAL-TIME] Created 60-min candle for {symbol} at {ts_60min}", "INFO")
+                            with self._stats_lock:
+                                self.candle_count += saved
+                
+                except Exception as e:
+                    self.logger(f"Error creating 60-min candles for {symbol}: {e}", "DEBUG")
+        
+        except Exception as e:
+            self.logger(f"Error in _try_create_60min_candles: {e}", "ERROR")
     
     def _heartbeat_loop(self):
         """Background heartbeat loop."""

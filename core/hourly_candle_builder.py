@@ -281,6 +281,94 @@ def log_forming_candle_usage(
         )
 
 
+def aggregate_5min_to_15min(
+    symbol: str,
+    candles_5min: pd.DataFrame,
+    instrument_token: Optional[int] = None,
+    logger=None
+) -> Optional[Dict[str, Any]]:
+    """
+    Aggregate 5-minute candles into a single 15-minute candle.
+    
+    Groups consecutive 5-minute candles (3 candles) into one 15-minute candle.
+    The 15-minute candle timestamp represents the start of the 15-minute period.
+    
+    Args:
+        symbol: Trading symbol (e.g., 'RELIANCE')
+        candles_5min: DataFrame of 5-minute candles with columns:
+                     [datetime, open, high, low, close, volume]
+        instrument_token: Optional instrument token for the symbol
+        logger: Optional logging function
+        
+    Returns:
+        Dictionary representing a single 15-minute candle with keys:
+        {
+            'datetime': datetime object for 15-min candle start
+            'symbol': Trading symbol
+            'instrument_token': Instrument token
+            'open': Open price (from first 5-min candle)
+            'high': Maximum high price across all 5-min candles
+            'low': Minimum low price across all 5-min candles
+            'close': Close price (from last 5-min candle)
+            'volume': Sum of all volumes
+            'tick_count': Number of 5-min candles aggregated
+        }
+        
+        Returns None if:
+        - DataFrame has fewer than 3 candles
+        - DataFrame is empty
+    """
+    if logger is None:
+        logger = _default_logger
+    
+    # Validate input
+    if candles_5min.empty:
+        logger(f"No 5-minute candles available for {symbol}", "WARNING")
+        return None
+    
+    if len(candles_5min) < 3:
+        logger(f"Insufficient 5-minute candles ({len(candles_5min)}) for {symbol}, need at least 3", "WARNING")
+        return None
+    
+    # Ensure datetime column exists
+    if 'datetime' not in candles_5min.columns:
+        if isinstance(candles_5min.index, pd.DatetimeIndex):
+            df = candles_5min.reset_index().rename(columns={'index': 'datetime'})
+        else:
+            logger(f"No datetime column found in 5-min candles for {symbol}", "ERROR")
+            return None
+    else:
+        df = candles_5min.copy()
+    
+    # Convert datetime to pandas datetime if needed
+    df['datetime'] = pd.to_datetime(df['datetime'])
+    
+    # Take first 3 candles for aggregation
+    aggregated = df.iloc[:3]
+    
+    # Get 15-minute candle timestamp (start of the 15-minute period)
+    # E.g., if first 5-min candle is at 9:05, the 15-min candle is at 9:00
+    first_datetime = pd.to_datetime(aggregated.iloc[0]['datetime'])
+    minutes = (first_datetime.minute // 15) * 15
+    candle_15min_timestamp = first_datetime.replace(minute=minutes, second=0, microsecond=0)
+    
+    # Aggregate OHLCV data
+    result = {
+        'datetime': candle_15min_timestamp,
+        'symbol': symbol,
+        'instrument_token': instrument_token,
+        'open': float(aggregated.iloc[0]['open']),
+        'high': float(aggregated['high'].max()),
+        'low': float(aggregated['low'].min()),
+        'close': float(aggregated.iloc[-1]['close']),
+        'volume': int(aggregated['volume'].sum()),
+        'tick_count': len(aggregated),
+        'source': 'aggregated'
+    }
+    
+    return result
+
+
 def _default_logger(message: str, level: str = "INFO"):
     """Default logger that prints to console."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

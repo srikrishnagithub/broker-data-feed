@@ -112,7 +112,7 @@ python broker_data_feed/main.py --test-database
 | `KOTAK_MOBILE_NUMBER` | KOTAK mobile number | Required for KOTAK NEO |
 | `KOTAK_PASSWORD` | KOTAK password | Required for KOTAK NEO |
 | `KOTAK_MPIN` | KOTAK MPIN | Required for KOTAK NEO |
-| `CANDLE_INTERVALS` | Candle intervals (minutes) | `5` |
+| `CANDLE_INTERVALS` | Comma-separated candle intervals in minutes (e.g., `5,15,60`) | `5` |
 | `HEARTBEAT_INTERVAL` | Heartbeat interval (seconds) | `30` |
 | `CANDLE_TABLE_NAME` | Target database table | `merged_candles_5min` |
 | `MQTT_BROKER` | MQTT broker hostname | Optional |
@@ -121,6 +121,31 @@ python broker_data_feed/main.py --test-database
 | `MQTT_PASSWORD` | MQTT password | Optional |
 | `MQTT_USE_TLS` | Use TLS for MQTT | `true` |
 | `LOG_LEVEL` | Logging level | `INFO` |
+
+### Important: Configuring Candle Intervals
+
+To enable multiple timeframes (5-min, 15-min, 60-min):
+
+```bash
+# For 60-minute candles, use:
+CANDLE_INTERVALS=5,15,60
+
+# Each interval in the list:
+# - Creates active candles from incoming ticks
+# - Enables real-time aggregation to higher timeframes
+# - Creates corresponding live_candles_{interval}min table
+```
+
+**Common Configurations:**
+- **5-minute only**: `CANDLE_INTERVALS=5`
+- **With hourly**: `CANDLE_INTERVALS=5,15,60` (Required for live_candles_60min)
+- **Full suite**: `CANDLE_INTERVALS=5,15,30,60`
+
+**Note**: The system performs real-time aggregation:
+- 5-min candles → 15-min candles (from database)
+- 15-min candles → 60-min candles (from database)
+
+Without 15-minute candles configured, 60-minute candles won't be created in real-time. See [LIVE_CANDLES_60MIN_FIX.md](LIVE_CANDLES_60MIN_FIX.md) for detailed troubleshooting.
 
 ## Adding New Brokers
 
