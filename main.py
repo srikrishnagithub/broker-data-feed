@@ -434,6 +434,27 @@ def main():
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
         
+        # NEW FEATURE 1: Comprehensive startup gap-fill
+        # Checks historical data completeness and fetches missing data automatically
+        log_message("="*80, "INFO")
+        log_message("STARTUP INITIALIZATION", "INFO")
+        log_message("="*80, "INFO")
+        
+        from core.startup_gap_fill import StartupGapFiller
+        
+        gap_filler = StartupGapFiller(db_handler, logger=log_message)
+        
+        try:
+            # Perform comprehensive gap-fill (handles all scenarios)
+            gap_filler.perform_comprehensive_gap_fill(
+                symbols=symbols,
+                intervals=service_config['candle_intervals']
+            )
+        except Exception as e:
+            log_message(f"Gap-fill encountered an error (continuing anyway): {e}", "WARNING")
+            import traceback
+            log_message(f"Traceback: {traceback.format_exc()}", "DEBUG")
+        
         # Aggregate existing 5-min candles into higher timeframes on startup
         log_message("Step 1: Performing startup backfill of missing 15-min and 60-min candles...", "INFO")
         backfill_results = db_handler.startup_backfill_all_symbols()
@@ -455,6 +476,24 @@ def main():
                 log_message(f"Created/updated {count} candles in live_candles_{interval}min", "SUCCESS")
         else:
             log_message("No higher timeframes configured, skipping aggregation", "INFO")
+        
+        # NEW FEATURE 2: Enable dynamic symbol management
+        if config.get_dynamic_symbols_enabled():
+            symbols_config_file = config.get_symbols_config_file()
+            monitor_interval = config.get_symbol_monitor_interval()
+            
+            log_message("Enabling dynamic symbol management...", "INFO")
+            log_message(f"  Config file: {symbols_config_file}", "INFO")
+            log_message(f"  Monitor interval: {monitor_interval} seconds", "INFO")
+            
+            service.enable_dynamic_symbol_management(
+                config_file=symbols_config_file,
+                monitor_interval=monitor_interval
+            )
+        else:
+            log_message("Dynamic symbol management disabled (set DYNAMIC_SYMBOLS_ENABLED=true to enable)", "INFO")
+        
+        log_message("="*80, "INFO")
         
         # Start service
         log_message(f"Starting service with {len(instruments)} instruments...", "INFO")

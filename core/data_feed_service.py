@@ -5,7 +5,7 @@ candle aggregation, and database storage.
 import time
 import signal
 import threading
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from datetime import datetime
 
 from core.base_broker import BaseBroker, TickData
@@ -61,6 +61,10 @@ class DataFeedService:
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._heartbeat_interval = 30  # seconds (market hours)
         self._off_market_heartbeat_interval = 600  # 10 minutes (off-market hours)
+        
+        # Dynamic symbol management
+        self._dynamic_symbol_manager: Optional[Any] = None
+        self._subscribed_instruments: Set[int] = set()
         
         self.logger("Data feed service initialized", "SUCCESS")
     
@@ -353,9 +357,11 @@ class DataFeedService:
                     for i in range(len(candles) - 3):
                         group = candles[i:i+4]
                         
-                        # Calculate expected 60-min timestamp
+                        # Calculate expected 60-min timestamp (anchor to 09:15 start)
                         first_datetime = pd.to_datetime(group[0][0])
-                        ts_60min = first_datetime.replace(minute=0, second=0, microsecond=0)
+                        if first_datetime.minute != 15:
+                            continue
+                        ts_60min = first_datetime.replace(second=0, microsecond=0)
                         
                         # Check if this 60-min candle already exists
                         if ts_60min in existing_60min_datetimes:
@@ -529,6 +535,9 @@ class DataFeedService:
             # Create symbol to instrument token mapping
             self._symbol_to_token = dict(zip(symbols, instruments))
             
+            # Track subscribed instruments
+            self._subscribed_instruments = set(instruments)
+            
             # Initialize candle aggregator with instrument tokens
             self.aggregator.set_instrument_tokens(self._symbol_to_token)
             
@@ -647,3 +656,103 @@ class DataFeedService:
         stats.update(self.aggregator.get_statistics())
         
         return stats
+    
+    def add_symbols_dynamically(self, symbol_to_token: Dict[str, int]) -> bool:
+        """
+        Add new symbols to the data feed dynamically (NEW FEATURE 2).
+        
+        This is called by the DynamicSymbolManager when new symbols are detected.
+        It subscribes to new instruments and updates internal tracking.
+        
+        Args:
+            symbol_to_token: Dictionary mapping symbols to instrument tokens
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not symbol_to_token:
+            return False
+        
+        new_instruments = []
+        
+        for symbol, token in symbol_to_token.items():
+            # Check if already subscribed
+            if token in self._subscribed_instruments:
+                self.logger(f"Symbol {symbol} already subscribed", "INFO")
+                continue
+            
+            # Add to mapping
+            self._symbol_to_token[symbol] = token
+            new_instruments.append(token)
+            self._subscribed_instruments.add(token)
+            
+            self.logger(f"Added symbol {symbol} with token {token}", "INFO")
+        
+        if not new_instruments:
+            self.logger("No new instruments to subscribe", "INFO")
+            return True
+        
+        # Subscribe to new instruments
+        try:
+            self.logger(f"Subscribing to {len(new_instruments)} new instruments...", "INFO")
+            
+            if not self.broker.subscribe(new_instruments):
+                self.logger("Failed to subscribe to new instruments", "ERROR")
+                return False
+            
+            # Update aggregator with new symbols
+            self.aggregator.set_instrument_tokens(self._symbol_to_token)
+            
+            self.logger(f"Successfully added {len(new_instruments)} new symbols", "SUCCESS")
+            return True
+            
+        except Exception as e:
+            self.logger(f"Error subscribing to new instruments: {e}", "ERROR")
+            return False
+    
+    def enable_dynamic_symbol_management(
+        self,
+        config_file: str,
+        monitor_interval: int = 30
+    ):
+        """
+        Enable dynamic symbol management (NEW FEATURE 2).
+        
+        Monitors a configuration file for new symbols and adds them to the data feed.
+        
+        Args:
+            config_file: Path to symbols configuration file
+            monitor_interval: How often to check for new symbols (seconds)
+        """
+        try:
+            from core.dynamic_symbol_manager import DynamicSymbolManager
+            
+            self.logger("Enabling dynamic symbol management...", "INFO")
+            
+            # Initialize dynamic symbol manager
+            self._dynamic_symbol_manager = DynamicSymbolManager(
+                config_file=config_file,
+                db_handler=self.database,
+                broker=self.broker,
+                on_symbols_added=self.add_symbols_dynamically,
+                logger=self.logger
+            )
+            
+            # Initialize with current symbols
+            current_symbols = list(self._symbol_to_token.keys())
+            self._dynamic_symbol_manager.initialize(current_symbols)
+            
+            # Start monitoring
+            self._dynamic_symbol_manager.start_monitoring(monitor_interval)
+            
+            self.logger(f"Dynamic symbol management enabled (monitoring: {config_file})", "SUCCESS")
+            
+        except Exception as e:
+            self.logger(f"Failed to enable dynamic symbol management: {e}", "ERROR")
+    
+    def disable_dynamic_symbol_management(self):
+        """Disable dynamic symbol management."""
+        if self._dynamic_symbol_manager:
+            self._dynamic_symbol_manager.stop_monitoring()
+            self._dynamic_symbol_manager = None
+            self.logger("Dynamic symbol management disabled", "INFO")

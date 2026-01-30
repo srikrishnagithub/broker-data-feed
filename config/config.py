@@ -93,6 +93,37 @@ class Config:
         return os.getenv('INSTRUMENTS_FILE')
     
     @staticmethod
+    def get_symbols_config_file() -> str:
+        """
+        Get path to symbols configuration file for dynamic symbol management.
+        
+        Returns:
+            Path to symbols config file (default: symbols.yaml in config folder)
+        """
+        default_path = str(Path(__file__).parent / "symbols.yaml")
+        return os.getenv('SYMBOLS_CONFIG_FILE', default_path)
+    
+    @staticmethod
+    def get_dynamic_symbols_enabled() -> bool:
+        """
+        Check if dynamic symbol management is enabled.
+        
+        Returns:
+            True if enabled, False otherwise
+        """
+        return os.getenv('DYNAMIC_SYMBOLS_ENABLED', 'true').lower() == 'true'
+    
+    @staticmethod
+    def get_symbol_monitor_interval() -> int:
+        """
+        Get interval for monitoring symbols config file (in seconds).
+        
+        Returns:
+            Monitoring interval in seconds (default: 30)
+        """
+        return int(os.getenv('SYMBOL_MONITOR_INTERVAL', '30'))
+    
+    @staticmethod
     def validate(broker_name: str = 'kite') -> List[str]:
         """
         Validate configuration.

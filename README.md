@@ -13,6 +13,8 @@ Independent live OHLC data feeding service for Trading-V2 with multi-broker supp
 - **MQTT Heartbeats**: Optional MQTT integration for monitoring and alerting
 - **Error Recovery**: Automatic reconnection on broker connection failures
 - **Logging**: Comprehensive logging with configurable levels
+- **🆕 Startup Gap-Fill**: Automatically fetches historical data when starting late during market hours
+- **🆕 Dynamic Symbol Management**: Add/remove symbols without restarting the service (via YAML config)
 
 ## Architecture
 
@@ -121,6 +123,32 @@ python broker_data_feed/main.py --test-database
 | `MQTT_PASSWORD` | MQTT password | Optional |
 | `MQTT_USE_TLS` | Use TLS for MQTT | `true` |
 | `LOG_LEVEL` | Logging level | `INFO` |
+| `DYNAMIC_SYMBOLS_ENABLED` | Enable dynamic symbol management | `false` |
+| `SYMBOLS_CONFIG_FILE` | Path to symbols YAML config | `config/symbols.yaml` |
+| `SYMBOL_MONITOR_INTERVAL` | Symbol config check interval (seconds) | `30` |
+
+### Dynamic Symbol Management (New Feature)
+
+Enable dynamic symbol addition/removal without restarting:
+
+```bash
+# In .env
+DYNAMIC_SYMBOLS_ENABLED=true
+SYMBOLS_CONFIG_FILE=config/symbols.yaml
+```
+
+Edit `config/symbols.yaml` to add/remove symbols:
+```yaml
+symbols:
+  - RELIANCE
+  - INFY
+  - TCS
+  # Add more symbols here
+
+enabled: true
+```
+
+Changes are detected within 30 seconds. See [NEW_FEATURES.md](NEW_FEATURES.md) for details.
 
 ### Important: Configuring Candle Intervals
 

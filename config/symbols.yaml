@@ -1,0 +1,112 @@
+# Symbols Configuration for Broker Data Feed
+# This file is monitored for changes when DYNAMIC_SYMBOLS_ENABLED=true
+# Add or remove symbols from the list below to dynamically manage subscriptions
+
+symbols:
+  # Nifty 50 blue chips
+  - RELIANCE
+  - TCS
+  - HDFCBANK
+  - INFY
+  - ICICIBANK
+  - HINDUNILVR
+  - ITC
+  - SBIN
+  - BHARTIARTL
+  - KOTAKBANK
+  - LT
+  - AXISBANK
+  - APOLLOHOSP
+  - TATAMOTORS
+  - NTPC
+  - INDUSINDBK
+  - COALINDIA
+  - BAJAJFINSV
+  - HINDALCO
+  - DRREDDY
+  - TATASTEEL
+  - JSWSTEEL
+  - DIVISLAB
+  - BAJAJ-AUTO
+  - ADANIPORTS
+  - BPCL
+  - EICHERMOT
+  - WIPRO
+  - ASIANPAINT
+  - HCLTECH
+  - MARUTI
+  - BAJFINANCE
+  - TITAN
+  - SUNPHARMA
+  - TECHM
+  - NESTLEIND
+  - POWERGRID
+  - ULTRACEMCO
+  - ADANIENT
+  - M&M
+  - GRASIM
+  - BRITANNIA
+  - HEROMOTOCO
+  - CIPLA
+  - UPL
+  - SBILIFE
+  - TATACONSUM
+  - SHREECEM
+  - CHOLAHLDNG
+  
+  # Additional symbols
+  - AFFLE
+  - NAVINFLUOR
+  - RPOWER
+  - KFINTECH
+  - AARTIIND
+  - WELCORP
+  - TATACHEM
+  - CASTROLIND
+  - IEX
+  - LAURUSLABS
+  - DELHIVERY
+  - IIFL
+  - ARE&M
+  - MANAPPURAM
+  - BANDHANBNK
+  - INOXWIND
+  - POONAWALLA
+  - CESC
+  - GLAND
+  - FIVESTAR
+  - PPLPHARMA
+  - REDINGTON
+  - WOCKPHARMA
+  - NATCOPHARM
+  - CROMPTON
+  - FSL
+  - MCX
+  - RADICO
+  - JBCHEPHARM
+  - ASTERDM
+  - NBCC
+  - CAMS
+  - CDSL
+  - LALPATHLAB
+  - AEGISLOG
+  - KEC
+  - PNBHOUSING
+  - HSCL
+  - PGEL
+  - AMBER
+  - RAMCOCEM
+  - KARURVYSYA
+  - ZENSARTECH
+  - NH
+  - ABREL
+  - KAYNES
+  - ANGELONE
+  - CYIENT
+  - NEULANDLAB
+  - SETFNIF50
+
+# Metadata
+enabled: true
+last_updated: "2026-01-28T00:00:00"
+description: "Symbol universe for intraday trading. Symbols are monitored for data quality and automatically added to live feed."

@@ -703,10 +703,12 @@ class DatabaseHandler:
                 # Get 4 consecutive 15-minute candles (4 * 15 = 60 minutes)
                 candle_group = df_15min.iloc[i:i+4]
                 
-                # Calculate 60-minute timestamp
+                # Calculate 60-minute timestamp (anchor to 09:15 start)
                 first_datetime = candle_group.iloc[0]['datetime']
-                hour = first_datetime.hour
-                candle_60min_ts = first_datetime.replace(minute=0, second=0, microsecond=0)
+                if first_datetime.minute != 15:
+                    i += 1
+                    continue
+                candle_60min_ts = first_datetime.replace(second=0, microsecond=0)
                 
                 # Check if this 60-minute candle already exists
                 if candle_60min_ts not in existing_60min_datetimes:

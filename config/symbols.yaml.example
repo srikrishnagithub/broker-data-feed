@@ -1,0 +1,27 @@
+# Example Symbols Configuration for Broker Data Feed
+# Copy this file to symbols.yaml and customize your symbol list
+# This file is monitored for changes when DYNAMIC_SYMBOLS_ENABLED=true
+
+symbols:
+  # Add your symbols here (one per line with dash prefix)
+  - RELIANCE
+  - INFY
+  - TCS
+  - HDFCBANK
+  - ICICIBANK
+  - SBIN
+  - BAJFINANCE
+  - BHARTIARTL
+  - KOTAKBANK
+  - ITC
+
+# Metadata (optional)
+enabled: true
+last_updated: "2026-01-28T00:00:00"
+description: "Configuration file for dynamic symbol management. Add new symbols to the 'symbols' list and save. The service will detect changes within 30 seconds and start tracking the new symbols."
+
+# Notes:
+# - Symbol format should match your broker (e.g., RELIANCE, not RELIANCE.NS)
+# - Make sure symbols exist in your instruments/kotak_instruments database table
+# - Historical data from 2024 onwards is recommended for each symbol
+# - Changes are detected automatically every 30 seconds (configurable via SYMBOL_MONITOR_INTERVAL)
