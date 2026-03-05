@@ -294,7 +294,7 @@ class DatabaseHandler:
                         (instrument_token, tradingsymbol, datetime, open, high, low, close, volume)
                         SELECT 
                             instrument_token,
-                            tradingsymbol,
+                            MAX(tradingsymbol) as tradingsymbol,
                             date_trunc('hour', datetime) + 
                                 (EXTRACT(minute FROM datetime)::int / {target_interval}) * INTERVAL '{target_interval} minutes' as datetime,
                             (array_agg(open ORDER BY datetime ASC))[1] as open,
@@ -303,7 +303,7 @@ class DatabaseHandler:
                             (array_agg(close ORDER BY datetime DESC))[1] as close,
                             SUM(volume) as volume
                         FROM {source_table}
-                        GROUP BY instrument_token, tradingsymbol, 
+                        GROUP BY instrument_token,
                             date_trunc('hour', datetime) + 
                             (EXTRACT(minute FROM datetime)::int / {target_interval}) * INTERVAL '{target_interval} minutes'
                         ON CONFLICT (instrument_token, datetime) 

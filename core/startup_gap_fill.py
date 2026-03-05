@@ -33,9 +33,6 @@ class StartupGapFiller:
     MARKET_OPEN_TIME = time(9, 10, 0)  # 9:10 AM
     MARKET_CLOSE_TIME = time(15, 30, 0)  # 3:30 PM
     
-    # Historical data requirement
-    MIN_HISTORICAL_DATE = date(2024, 1, 1)  # Data should exist from 2024
-    
     def __init__(self, db_handler: DatabaseHandler, logger=None):
         """
         Initialize gap filler.
@@ -54,6 +51,16 @@ class StartupGapFiller:
         """Default logger."""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{timestamp}] [{level}] {message}")
+    
+    @property
+    def MIN_HISTORICAL_DATE(self) -> date:
+        """
+        Calculate minimum historical date dynamically as one year prior to current date.
+        
+        Returns:
+            Date object representing one year ago from today
+        """
+        return (datetime.now().date() - timedelta(days=365))
     
     def is_market_hours(self, check_time: Optional[datetime] = None) -> bool:
         """
@@ -172,39 +179,24 @@ class StartupGapFiller:
             interval_name = interval_map.get(interval, '15')
             
             self.logger(f"Fetching {interval}-minute candles...", "INFO")
-            
-            # For each symbol (or use 'all' if many symbols)
-            # If we have many symbols, it's better to process all at once
-            if len(symbols) > 10:
-                symbol_arg = None  # Don't specify symbol, fetch all
-                self.logger(f"Processing all symbols from database", "INFO")
-            else:
-                # Process individually
-                for symbol in symbols:
-                    try:
-                        self._fetch_single_symbol(
-                            nse_cli_path,
-                            symbol,
-                            start_time,
-                            end_time,
-                            interval_name
-                        )
-                    except Exception as e:
-                        self.logger(f"Error fetching {symbol}: {e}", "ERROR")
-                continue
-            
-            # Fetch all symbols at once
-            try:
-                self._fetch_all_symbols(
-                    nse_cli_path,
-                    start_time,
-                    end_time,
-                    interval_name
-                )
-                results[interval] = {'success': True}
-            except Exception as e:
-                self.logger(f"Error fetching {interval}min data: {e}", "ERROR")
-                results[interval] = {'success': False, 'error': str(e)}
+
+            self.logger(f"Processing configured symbols list ({len(symbols)} symbols)", "INFO")
+
+            interval_success = True
+            for symbol in symbols:
+                try:
+                    self._fetch_single_symbol(
+                        nse_cli_path,
+                        symbol,
+                        start_time,
+                        end_time,
+                        interval_name
+                    )
+                except Exception as e:
+                    self.logger(f"Error fetching {symbol}: {e}", "ERROR")
+                    interval_success = False
+
+            results[interval] = {'success': interval_success}
         
         return results
     
@@ -356,12 +348,16 @@ class StartupGapFiller:
             # Check each interval
             missing_ranges = []
             latest_dates = []
+            missing_symbols_by_table = {}
+            all_missing_symbols = set()
             
             for interval in intervals:
                 table_name = f'historical_{interval}min'
                 
                 if not self.db.check_table_exists(table_name):
                     self.logger(f"Table {table_name} does not exist", "WARNING")
+                    missing_symbols_by_table[table_name] = list(symbols)
+                    all_missing_symbols.update(symbols)
                     missing_ranges.append((self.MIN_HISTORICAL_DATE, yesterday))
                     continue
                 
@@ -395,19 +391,27 @@ class StartupGapFiller:
                             self.logger(f"{table_name}: No valid dates found", "WARNING")
                         
                         if missing_symbols:
+                            missing_symbols_by_table[table_name] = missing_symbols
+                            all_missing_symbols.update(missing_symbols)
+                            preview = ', '.join(missing_symbols[:10])
+                            suffix = '...' if len(missing_symbols) > 10 else ''
                             self.logger(
-                                f"{table_name}: Missing data for {len(missing_symbols)} symbols",
+                                f"{table_name}: Missing data for {len(missing_symbols)} symbols [{preview}{suffix}]",
                                 "WARNING"
                             )
                             missing_ranges.append((self.MIN_HISTORICAL_DATE, yesterday))
                         
                         # Check if all symbols are up to yesterday
-                        if min_latest is None or min_latest < yesterday:
+                        # Convert to dates to avoid timezone comparison issues
+                        min_latest_date = min_latest.date() if min_latest and hasattr(min_latest, 'date') else min_latest
+                        if min_latest_date is None or min_latest_date < yesterday:
                             gap_start = (min_latest + timedelta(days=1)) if min_latest else self.MIN_HISTORICAL_DATE
                             missing_ranges.append((gap_start, yesterday))
                             self.logger(f"  Missing data from {gap_start} to {yesterday}", "WARNING")
                     else:
                         self.logger(f"{table_name}: No data found", "WARNING")
+                        missing_symbols_by_table[table_name] = list(symbols)
+                        all_missing_symbols.update(symbols)
                         missing_ranges.append((self.MIN_HISTORICAL_DATE, yesterday))
             
             # Determine if complete
@@ -419,7 +423,9 @@ class StartupGapFiller:
                 'missing_ranges': missing_ranges,
                 'latest_date': latest_date,
                 'symbols_checked': len(symbols),
-                'yesterday': yesterday
+                'yesterday': yesterday,
+                'missing_symbols': sorted(all_missing_symbols),
+                'missing_symbols_by_table': missing_symbols_by_table
             }
             
         except Exception as e:
@@ -429,7 +435,9 @@ class StartupGapFiller:
                 'missing_ranges': [(self.MIN_HISTORICAL_DATE, yesterday)],
                 'latest_date': None,
                 'symbols_checked': len(symbols),
-                'yesterday': yesterday
+                'yesterday': yesterday,
+                'missing_symbols': [],
+                'missing_symbols_by_table': {}
             }
     
     def fetch_missing_historical_data(
@@ -470,8 +478,9 @@ class StartupGapFiller:
                 '--run_id', f'AUTOFILL_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
             ]
             
-            if symbols and len(symbols) <= 5:
-                # If few symbols, fetch individually for better progress tracking
+            if symbols:
+                # Process only requested symbols (strict symbols list mode)
+                failed_symbols = []
                 for symbol in symbols:
                     symbol_cmd = cmd + ['--symbol', symbol]
                     self.logger(f"Fetching {symbol}...", "INFO")
@@ -487,6 +496,19 @@ class StartupGapFiller:
                     if result.returncode != 0:
                         error_output = (result.stderr or result.stdout or "").strip()
                         self.logger(f"Warning: Failed to fetch {symbol}: {error_output}", "WARNING")
+                        failed_symbols.append(symbol)
+
+                success_count = len(symbols) - len(failed_symbols)
+                self.logger(
+                    f"Historical data fetch completed for {start_date} to {end_date} "
+                    f"(success: {success_count}, failed: {len(failed_symbols)})",
+                    "SUCCESS"
+                )
+                if failed_symbols:
+                    self.logger(
+                        f"Failed symbols: {', '.join(failed_symbols[:10])}{'...' if len(failed_symbols) > 10 else ''}",
+                        "WARNING"
+                    )
             else:
                 # Fetch all symbols at once
                 self.logger(f"Executing: {' '.join(cmd)}", "DEBUG")
@@ -504,7 +526,10 @@ class StartupGapFiller:
                     self.logger(f"nse_cli.py failed: {error_output}", "ERROR")
                     return False
                 
-                self.logger("Historical data fetch completed", "SUCCESS")
+                self.logger(
+                    f"Historical data fetch completed for {start_date} to {end_date}",
+                    "SUCCESS"
+                )
             
             return True
             
@@ -597,6 +622,14 @@ class StartupGapFiller:
         
         if not hist_check['has_complete_data']:
             self.logger("Historical data is incomplete!", "WARNING")
+            missing_symbols = hist_check.get('missing_symbols', [])
+            if missing_symbols:
+                preview = ', '.join(missing_symbols[:20])
+                suffix = '...' if len(missing_symbols) > 20 else ''
+                self.logger(
+                    f"Missing symbols ({len(missing_symbols)}): {preview}{suffix}",
+                    "WARNING"
+                )
             self.logger(f"Latest data: {hist_check['latest_date']}", "INFO")
             self.logger(f"Expected up to: {hist_check['yesterday']}", "INFO")
             

@@ -3,7 +3,7 @@
 # Add or remove symbols from the list below to dynamically manage subscriptions
 
 symbols:
-  # Nifty 50 blue chips
+  - LUPIN
   - RELIANCE
   - TCS
   - HDFCBANK
@@ -16,21 +16,6 @@ symbols:
   - KOTAKBANK
   - LT
   - AXISBANK
-  - APOLLOHOSP
-  - TATAMOTORS
-  - NTPC
-  - INDUSINDBK
-  - COALINDIA
-  - BAJAJFINSV
-  - HINDALCO
-  - DRREDDY
-  - TATASTEEL
-  - JSWSTEEL
-  - DIVISLAB
-  - BAJAJ-AUTO
-  - ADANIPORTS
-  - BPCL
-  - EICHERMOT
   - WIPRO
   - ASIANPAINT
   - HCLTECH
@@ -43,18 +28,33 @@ symbols:
   - POWERGRID
   - ULTRACEMCO
   - ADANIENT
+  - TATAMOTORS
+  - ONGC
+  - TATASTEEL
+  - JSWSTEEL
+  - NTPC
+  - INDUSINDBK
   - M&M
+  - COALINDIA
+  - BAJAJFINSV
+  - HINDALCO
+  - DRREDDY
   - GRASIM
+  - DIVISLAB
+  - BAJAJ-AUTO
   - BRITANNIA
   - HEROMOTOCO
+  - ADANIPORTS
   - CIPLA
   - UPL
   - SBILIFE
+  - EICHERMOT
+  - BPCL
   - TATACONSUM
+  - APOLLOHOSP
   - SHREECEM
+  - HDFC
   - CHOLAHLDNG
-  
-  # Additional symbols
   - AFFLE
   - NAVINFLUOR
   - RPOWER
@@ -105,7 +105,14 @@ symbols:
   - CYIENT
   - NEULANDLAB
   - SETFNIF50
-
+  - DLF
+  - GODREJPROP
+  - PIDILITIND
+  - NIFTY 50
+  - GODREJAGRO
+  - GRINFRA
+  - ISGEC
+  - KRN
 # Metadata
 enabled: true
 last_updated: "2026-01-28T00:00:00"

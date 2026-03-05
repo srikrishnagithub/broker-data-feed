@@ -53,9 +53,16 @@ class DynamicSymbolManager:
         self._file_mtime: Optional[float] = None
         self._monitor_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+    
+    @property
+    def min_historical_date(self) -> datetime:
+        """
+        Calculate minimum historical date dynamically as one year prior to current date.
         
-        # Historical data requirements
-        self.min_historical_date = datetime(2024, 1, 1)  # Data should exist from 2024
+        Returns:
+            datetime object representing one year ago from today
+        """
+        return datetime.now() - timedelta(days=365)
         
     def _default_logger(self, message: str, level: str = "INFO"):
         """Default logger."""
@@ -265,8 +272,12 @@ class DynamicSymbolManager:
                         result['record_count'] += count
             
             # Check if data meets minimum date requirement
-            if result['earliest_date'] and result['earliest_date'] <= min_date:
-                result['has_data'] = True
+            # Convert to dates to avoid timezone comparison issues
+            if result['earliest_date']:
+                earliest_date = result['earliest_date'].date() if hasattr(result['earliest_date'], 'date') else result['earliest_date']
+                min_date_only = min_date.date() if hasattr(min_date, 'date') else min_date
+                if earliest_date <= min_date_only:
+                    result['has_data'] = True
             
             return result
             
@@ -310,11 +321,15 @@ class DynamicSymbolManager:
             self.logger(f"nse_cli.py not found at {nse_cli_path}", "ERROR")
             return False
         
+        cli_cwd = str(trading_v2_path)
+        venv_python = trading_v2_path / "venv" / "Scripts" / "python.exe"
+        python_exe = os.getenv("TRADING_V2_PYTHON") or (str(venv_python) if venv_python.exists() else sys.executable)
+
         # Fetch for all intervals
         for interval in ['5', '15', 'hourly']:
             try:
                 cmd = [
-                    sys.executable,
+                    python_exe,
                     str(nse_cli_path),
                     '--mode', 'data',
                     '--interval', interval,
@@ -330,11 +345,17 @@ class DynamicSymbolManager:
                     cmd,
                     capture_output=True,
                     text=True,
+                    cwd=cli_cwd,
                     timeout=300  # 5 minutes
                 )
                 
                 if result.returncode != 0:
-                    self.logger(f"Failed to fetch {interval} data: {result.stderr}", "ERROR")
+                    error_msg = result.stderr.strip() if result.stderr else result.stdout.strip()
+                    self.logger(f"Failed to fetch {interval} data for {symbol}:", "ERROR")
+                    if error_msg:
+                        self.logger(f"  Error: {error_msg}", "ERROR")
+                    else:
+                        self.logger(f"  Exit code: {result.returncode}", "ERROR")
                     return False
                 
                 self.logger(f"Successfully fetched {interval} data for {symbol}", "SUCCESS")
@@ -376,7 +397,8 @@ class DynamicSymbolManager:
         hist_check = self.verify_historical_data(symbol)
         
         if not hist_check['has_data']:
-            self.logger(f"No historical data found for {symbol} (required from 2024)", "WARNING")
+            min_date_str = self.min_historical_date.strftime('%Y-%m-%d')
+            self.logger(f"No historical data found for {symbol} (required from {min_date_str})", "WARNING")
             self.logger(f"Fetching historical data for {symbol}...", "INFO")
             
             # Step 3: Fetch historical data

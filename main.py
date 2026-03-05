@@ -6,6 +6,7 @@ import os
 import sys
 import signal
 import argparse
+import threading
 from pathlib import Path
 from datetime import datetime
 
@@ -82,14 +83,56 @@ def load_instruments_from_file(file_path: str) -> list:
     Load instruments from file.
     
     Args:
-        file_path: Path to instruments file (one symbol per line)
+        file_path: Path to instruments file (YAML/JSON/text)
         
     Returns:
         List of symbols
     """
     try:
-        with open(file_path, 'r') as f:
-            symbols = [line.strip() for line in f if line.strip()]
+        file_suffix = Path(file_path).suffix.lower()
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        raw_symbols = []
+
+        if file_suffix in ['.yaml', '.yml']:
+            try:
+                import yaml
+                data = yaml.safe_load(content) or {}
+            except Exception as e:
+                log_message(f"Error parsing YAML symbols file: {e}", "ERROR")
+                return []
+
+            if isinstance(data, dict):
+                raw_symbols = data.get('symbols', []) or []
+            elif isinstance(data, list):
+                raw_symbols = data
+
+        elif file_suffix == '.json':
+            import json
+            data = json.loads(content)
+            if isinstance(data, dict):
+                raw_symbols = data.get('symbols', []) or []
+            elif isinstance(data, list):
+                raw_symbols = data
+
+        else:
+            raw_symbols = [
+                line.strip()
+                for line in content.splitlines()
+                if line.strip() and not line.strip().startswith('#')
+            ]
+
+        symbols = []
+        seen = set()
+        for symbol in raw_symbols:
+            normalized = str(symbol).strip()
+            if not normalized or normalized.startswith('#'):
+                continue
+            if normalized not in seen:
+                seen.add(normalized)
+                symbols.append(normalized)
+
         log_message(f"Loaded {len(symbols)} symbols from {file_path}", "INFO")
         return symbols
     except Exception as e:
@@ -228,6 +271,69 @@ def load_instruments_from_database(db_handler: DatabaseHandler, broker_name: str
         import traceback
         log_message(f"Traceback: {traceback.format_exc()}", "DEBUG")
         return {}
+
+
+def run_startup_initialization_async(
+    db_handler: DatabaseHandler,
+    symbols: list,
+    candle_intervals: list
+):
+    """Run startup historical initialization in background."""
+    def _startup_initialization_worker():
+        log_message("="*80, "INFO")
+        log_message("STARTUP INITIALIZATION (BACKGROUND)", "INFO")
+        log_message("="*80, "INFO")
+
+        from core.startup_gap_fill import StartupGapFiller
+
+        gap_filler = StartupGapFiller(db_handler, logger=log_message)
+
+        try:
+            gap_filler.perform_comprehensive_gap_fill(
+                symbols=symbols,
+                intervals=candle_intervals
+            )
+        except Exception as e:
+            log_message(f"Gap-fill encountered an error (continuing anyway): {e}", "WARNING")
+            import traceback
+            log_message(f"Traceback: {traceback.format_exc()}", "DEBUG")
+
+        log_message("Step 1: Performing startup backfill of missing 15-min and 60-min candles...", "INFO")
+        try:
+            backfill_results = db_handler.startup_backfill_all_symbols()
+            if backfill_results:
+                total_15min = sum(r['15min_backfilled'] for r in backfill_results.values())
+                total_60min = sum(r['60min_backfilled'] for r in backfill_results.values())
+                log_message(f"✓ Backfill complete: {total_15min} x 15-min, {total_60min} x 60-min candles", "SUCCESS")
+            else:
+                log_message("ℹ No missing candles to backfill", "INFO")
+        except Exception as e:
+            log_message(f"Startup backfill encountered an error (continuing anyway): {e}", "WARNING")
+
+        log_message("Aggregating existing 5-min candles into higher timeframes...", "INFO")
+        try:
+            intervals_to_aggregate = [i for i in candle_intervals if i > 5]
+            if intervals_to_aggregate:
+                results = db_handler.aggregate_candles_on_startup(
+                    source_interval=5,
+                    target_intervals=intervals_to_aggregate
+                )
+                for interval, count in results.items():
+                    log_message(f"Created/updated {count} candles in live_candles_{interval}min", "SUCCESS")
+            else:
+                log_message("No higher timeframes configured, skipping aggregation", "INFO")
+        except Exception as e:
+            log_message(f"Startup aggregation encountered an error (continuing anyway): {e}", "WARNING")
+
+        log_message("Background startup initialization completed", "SUCCESS")
+
+    startup_thread = threading.Thread(
+        target=_startup_initialization_worker,
+        daemon=True,
+        name="startup_initialization"
+    )
+    startup_thread.start()
+    return startup_thread
 
 
 def parse_arguments():
@@ -409,8 +515,20 @@ def main():
         if not symbol_to_token:
             log_message("No instrument tokens loaded", "ERROR")
             return 1
-        
-        instruments = list(symbol_to_token.values())
+
+        requested_symbols = list(symbols)
+        symbols = list(symbol_to_token.keys())
+        instruments = [symbol_to_token[symbol] for symbol in symbols]
+
+        missing_symbols = [symbol for symbol in requested_symbols if symbol not in symbol_to_token]
+        if missing_symbols:
+            preview = ', '.join(missing_symbols[:15])
+            suffix = '...' if len(missing_symbols) > 15 else ''
+            log_message(
+                f"Could not resolve instrument tokens for {len(missing_symbols)} symbols: {preview}{suffix}",
+                "WARNING"
+            )
+
         log_message(f"Loaded {len(instruments)} instrument tokens for {len(symbols)} symbols", "SUCCESS")
         
         # Setup MQTT (optional)
@@ -434,56 +552,24 @@ def main():
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
         
-        # NEW FEATURE 1: Comprehensive startup gap-fill
-        # Checks historical data completeness and fetches missing data automatically
-        log_message("="*80, "INFO")
-        log_message("STARTUP INITIALIZATION", "INFO")
-        log_message("="*80, "INFO")
-        
-        from core.startup_gap_fill import StartupGapFiller
-        
-        gap_filler = StartupGapFiller(db_handler, logger=log_message)
-        
-        try:
-            # Perform comprehensive gap-fill (handles all scenarios)
-            gap_filler.perform_comprehensive_gap_fill(
-                symbols=symbols,
-                intervals=service_config['candle_intervals']
-            )
-        except Exception as e:
-            log_message(f"Gap-fill encountered an error (continuing anyway): {e}", "WARNING")
-            import traceback
-            log_message(f"Traceback: {traceback.format_exc()}", "DEBUG")
-        
-        # Aggregate existing 5-min candles into higher timeframes on startup
-        log_message("Step 1: Performing startup backfill of missing 15-min and 60-min candles...", "INFO")
-        backfill_results = db_handler.startup_backfill_all_symbols()
-        if backfill_results:
-            total_15min = sum(r['15min_backfilled'] for r in backfill_results.values())
-            total_60min = sum(r['60min_backfilled'] for r in backfill_results.values())
-            log_message(f"✓ Backfill complete: {total_15min} x 15-min, {total_60min} x 60-min candles", "SUCCESS")
-        else:
-            log_message("ℹ No missing candles to backfill", "INFO")
-        
-        log_message("Aggregating existing 5-min candles into higher timeframes...", "INFO")
-        intervals_to_aggregate = [i for i in service_config['candle_intervals'] if i > 5]
-        if intervals_to_aggregate:
-            results = db_handler.aggregate_candles_on_startup(
-                source_interval=5,
-                target_intervals=intervals_to_aggregate
-            )
-            for interval, count in results.items():
-                log_message(f"Created/updated {count} candles in live_candles_{interval}min", "SUCCESS")
-        else:
-            log_message("No higher timeframes configured, skipping aggregation", "INFO")
+        # NEW FEATURE 1: Comprehensive startup gap-fill (background)
+        # Runs historical initialization in parallel while live feed starts immediately
+        run_startup_initialization_async(
+            db_handler=db_handler,
+            symbols=symbols,
+            candle_intervals=service_config['candle_intervals']
+        )
+        log_message("Startup historical initialization is running in background", "INFO")
         
         # NEW FEATURE 2: Enable dynamic symbol management
         if config.get_dynamic_symbols_enabled():
-            symbols_config_file = config.get_symbols_config_file()
+            symbols_config_file = args.symbols_file if args.symbols_file else config.get_symbols_config_file()
             monitor_interval = config.get_symbol_monitor_interval()
             
             log_message("Enabling dynamic symbol management...", "INFO")
             log_message(f"  Config file: {symbols_config_file}", "INFO")
+            if args.symbols_file:
+                log_message("  Source: --symbols-file (startup and dynamic monitor are synced)", "INFO")
             log_message(f"  Monitor interval: {monitor_interval} seconds", "INFO")
             
             service.enable_dynamic_symbol_management(

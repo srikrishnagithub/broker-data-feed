@@ -343,9 +343,19 @@ class KiteBroker(BaseBroker):
             Dictionary mapping symbols to instrument tokens
         """
         try:
+            # Initialize KiteConnect REST client if not already initialized
             if not self.kite:
-                self.logger("KiteConnect not initialized", "ERROR")
-                return {}
+                self.logger("Initializing KiteConnect REST client for instrument lookup...", "INFO")
+                try:
+                    self.kite = KiteConnect(api_key=self.api_key)
+                    self.kite.set_access_token(self.access_token)
+                    
+                    # Test authentication
+                    profile = self.kite.profile()  # type: ignore
+                    self.logger(f"Authenticated as: {profile.get('user_name', 'Unknown')}", "SUCCESS")  # type: ignore
+                except Exception as e:
+                    self.logger(f"Authentication failed: {e}", "ERROR")
+                    return {}
             
             # Get all instruments
             self.logger("Fetching instrument list from Kite...", "INFO")
